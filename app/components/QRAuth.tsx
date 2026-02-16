@@ -54,10 +54,49 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   if (error) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-        <div className="text-center">
-          <p className="text-red-600 dark:text-red-400 mb-4">{error}</p>
-          <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-            Make sure the backend is running on {API_URL}
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+          <div className="mb-4">
+            <svg 
+              className="w-16 h-16 mx-auto text-zinc-400 dark:text-zinc-600" 
+              fill="none" 
+              stroke="currentColor" 
+              viewBox="0 0 24 24"
+            >
+              <path 
+                strokeLinecap="round" 
+                strokeLinejoin="round" 
+                strokeWidth={2} 
+                d="M18.364 5.636a9 9 0 010 12.728m0 0l-2.829-2.829m2.829 2.829L21 21M15.536 8.464a5 5 0 010 7.072m0 0l-2.829-2.829m-4.243 2.829a4.978 4.978 0 01-1.414-2.83m-1.414 5.658a9 9 0 01-2.167-9.238m7.824 2.167a1 1 0 111.414 1.414m-1.414-1.414L3 3m8.293 8.293l1.414 1.414" 
+              />
+            </svg>
+          </div>
+          <h2 className="text-xl font-semibold mb-2 text-black dark:text-zinc-50">
+            Backend Service Unavailable
+          </h2>
+          <p className="text-zinc-600 dark:text-zinc-400 mb-4">
+            We're unable to connect to the backend service right now. This could be temporary.
+          </p>
+          <div className="bg-zinc-50 dark:bg-zinc-800 rounded-lg p-4 mb-6 text-left">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-2">
+              <strong className="text-zinc-900 dark:text-zinc-50">What this means:</strong>
+            </p>
+            <ul className="text-sm text-zinc-600 dark:text-zinc-400 space-y-1 list-disc list-inside">
+              <li>The backend server may be starting up</li>
+              <li>The service might be temporarily unavailable</li>
+              <li>Please check your connection and try again</li>
+            </ul>
+          </div>
+          <button
+            onClick={() => {
+              setError(null);
+              setStatus({ status: 'initializing' });
+            }}
+            className="px-6 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
+          >
+            Retry Connection
+          </button>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-4">
+            Backend URL: {API_URL}
           </p>
         </div>
       </div>
