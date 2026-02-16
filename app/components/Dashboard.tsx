@@ -119,7 +119,7 @@ export default function Dashboard() {
         <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-6 text-center">
           <div className="mb-3">
             <svg 
-              className="w-12 h-12 mx-auto text-yellow-600 dark:text-yellow-400" 
+              className="w-10 h-10 mx-auto text-yellow-600 dark:text-yellow-400" 
               fill="none" 
               stroke="currentColor" 
               viewBox="0 0 24 24"
@@ -132,11 +132,8 @@ export default function Dashboard() {
               />
             </svg>
           </div>
-          <h3 className="text-lg font-semibold text-yellow-800 dark:text-yellow-300 mb-2">
-            Unable to Load Chats
-          </h3>
           <p className="text-yellow-700 dark:text-yellow-400 mb-4">
-            The backend service is currently unavailable. This may be temporary.
+            Unable to load chats. Please try again.
           </p>
           <button
             onClick={loadLeads}
