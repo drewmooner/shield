@@ -124,7 +124,10 @@ export default function LeadDetailPage() {
                   className="w-12 h-12 rounded-full object-cover"
                   onError={(e) => {
                     e.currentTarget.style.display = 'none';
-                    e.currentTarget.nextElementSibling.style.display = 'flex';
+                    const nextSibling = e.currentTarget.nextElementSibling as HTMLElement | null;
+                    if (nextSibling) {
+                      nextSibling.style.display = 'flex';
+                    }
                   }}
                 />
               ) : null}
