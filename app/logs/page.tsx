@@ -48,20 +48,20 @@ export default function LogsPage() {
   }
 
   return (
-    <div className="p-6">
-      <h1 className="text-2xl font-bold mb-6 text-black dark:text-zinc-50">Activity Logs</h1>
+    <div className="p-4 sm:p-6">
+      <h1 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 text-black dark:text-zinc-50">Activity Logs</h1>
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full min-w-[640px]">
             <thead className="bg-zinc-100 dark:bg-zinc-800">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                <th className="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-medium text-zinc-700 dark:text-zinc-300">
                   Time
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                <th className="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-medium text-zinc-700 dark:text-zinc-300">
                   Action
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                <th className="px-2 sm:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-medium text-zinc-700 dark:text-zinc-300">
                   Details
                 </th>
               </tr>
@@ -69,15 +69,15 @@ export default function LogsPage() {
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {logs.map((log) => (
                 <tr key={log.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800">
-                  <td className="px-4 py-3 text-sm text-zinc-600 dark:text-zinc-400">
+                  <td className="px-2 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-zinc-600 dark:text-zinc-400">
                     {new Date(log.timestamp).toLocaleString()}
                   </td>
-                  <td className={`px-4 py-3 text-sm font-medium ${getActionColor(log.action)}`}>
+                  <td className={`px-2 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm font-medium ${getActionColor(log.action)}`}>
                     {log.action.replace(/_/g, ' ')}
                   </td>
-                  <td className="px-4 py-3 text-sm text-zinc-600 dark:text-zinc-400">
+                  <td className="px-2 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-zinc-600 dark:text-zinc-400">
                     {log.details ? (
-                      <pre className="text-xs whitespace-pre-wrap">
+                      <pre className="text-xs whitespace-pre-wrap break-words">
                         {typeof log.details === 'string' 
                           ? JSON.stringify(JSON.parse(log.details), null, 2)
                           : JSON.stringify(log.details, null, 2)}

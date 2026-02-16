@@ -109,8 +109,8 @@ export default function StatusBar() {
   return (
     <div className="bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800">
       <div className="px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
             <div className="flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full ${getStatusColor()}`} />
               <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -124,11 +124,11 @@ export default function StatusBar() {
               {showLogs ? 'Hide' : 'Show'} Logs ({recentLogs.length})
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handlePauseResume}
               disabled={loading || !isConnected}
-              className="px-4 py-1.5 text-sm rounded-lg bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="px-3 sm:px-4 py-1.5 text-xs sm:text-sm rounded-lg bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isPaused ? 'Resume' : 'Pause'}
             </button>
@@ -136,7 +136,7 @@ export default function StatusBar() {
               <button
                 onClick={handleDisconnect}
                 disabled={loading}
-                className="px-4 py-1.5 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="px-3 sm:px-4 py-1.5 text-xs sm:text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 Disconnect
               </button>

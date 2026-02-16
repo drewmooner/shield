@@ -53,8 +53,8 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
 
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
           <div className="mb-4">
             <svg 
               className="w-12 h-12 mx-auto text-zinc-400 dark:text-zinc-600" 
@@ -92,16 +92,16 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
 
   if (status.status === 'qr_ready' && status.qr) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
-          <h1 className="text-2xl font-semibold mb-2 text-black dark:text-zinc-50">
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
+          <h1 className="text-xl sm:text-2xl font-semibold mb-2 text-black dark:text-zinc-50">
             Shield WhatsApp Login
           </h1>
-          <p className="text-zinc-600 dark:text-zinc-400 mb-6">
+          <p className="text-sm sm:text-base text-zinc-600 dark:text-zinc-400 mb-4 sm:mb-6">
             Scan this QR code with WhatsApp to connect
           </p>
-          <div className="flex justify-center mb-6 p-4 bg-white rounded-lg">
-            <QRCode value={status.qr} size={256} />
+          <div className="flex justify-center mb-4 sm:mb-6 p-2 sm:p-4 bg-white rounded-lg">
+            <QRCode value={status.qr} size={Math.min(256, typeof window !== 'undefined' ? window.innerWidth - 80 : 256)} />
           </div>
           <p className="text-sm text-zinc-500 dark:text-zinc-500">
             Open WhatsApp → Settings → Linked Devices → Link a Device
@@ -139,8 +139,8 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
 
   if (status.status === 'disconnected' || status.status === 'error') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
           <h2 className="text-xl font-semibold mb-4 text-red-600 dark:text-red-400">
             Connection Failed
           </h2>
@@ -168,8 +168,8 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
 
   // Show current status with reconnect option
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-      <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+    <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
+      <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-zinc-900 dark:border-zinc-50 mx-auto mb-4"></div>
         <h2 className="text-xl font-semibold mb-2 text-black dark:text-zinc-50">
           Status: {status.status || 'unknown'}
