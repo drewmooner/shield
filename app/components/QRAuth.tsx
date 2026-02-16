@@ -1,0 +1,191 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import QRCode from 'qrcode.react';
+
+const API_URL = typeof window !== 'undefined' 
+  ? (process.env.NEXT_PUBLIC_API_URL || '/api')
+  : 'http://localhost:3002/api';
+
+interface BotStatus {
+  status: string;
+  qr?: string;
+  isConnected?: boolean;
+  timestamp?: string;
+  reconnectAttempts?: number;
+}
+
+export default function QRAuth({ onConnected }: { onConnected: () => void }) {
+  const [status, setStatus] = useState<BotStatus>({ status: 'initializing' });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const res = await fetch(`${API_URL}/bot/status`);
+        if (!res.ok) {
+          throw new Error(`Backend returned ${res.status}`);
+        }
+        const data = await res.json();
+        console.log('Bot status:', data); // Debug log
+        console.log('Status:', data.status, 'QR:', data.qr ? `Present (${data.qr.substring(0, 20)}...)` : 'Missing', 'isConnected:', data.isConnected);
+        setStatus(data);
+        setError(null);
+
+        if (data.status === 'connected' && data.isConnected) {
+          onConnected();
+        }
+      } catch (err) {
+        setError('Failed to connect to backend. Make sure the backend is running on port 3002.');
+        console.error('Backend connection error:', err);
+      }
+    };
+
+    // Check immediately
+    checkStatus();
+    // Then check again after 500ms for faster initial load
+    setTimeout(checkStatus, 500);
+    // Then poll every 1 second
+    const interval = setInterval(checkStatus, 1000);
+
+    return () => clearInterval(interval);
+  }, [onConnected]);
+
+  if (error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <div className="text-center">
+          <p className="text-red-600 dark:text-red-400 mb-4">{error}</p>
+          <p className="text-zinc-600 dark:text-zinc-400 text-sm">
+            Make sure the backend is running on {API_URL}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.status === 'qr_ready' && status.qr) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+          <h1 className="text-2xl font-semibold mb-2 text-black dark:text-zinc-50">
+            Shield WhatsApp Login
+          </h1>
+          <p className="text-zinc-600 dark:text-zinc-400 mb-6">
+            Scan this QR code with WhatsApp to connect
+          </p>
+          <div className="flex justify-center mb-6 p-4 bg-white rounded-lg">
+            <QRCode value={status.qr} size={256} />
+          </div>
+          <p className="text-sm text-zinc-500 dark:text-zinc-500">
+            Open WhatsApp → Settings → Linked Devices → Link a Device
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.status === 'connecting' || status.status === 'initializing') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-zinc-900 dark:border-zinc-50 mx-auto mb-4"></div>
+          <p className="text-zinc-600 dark:text-zinc-400">
+            {status.status === 'initializing' ? 'Initializing...' : 'Connecting...'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.status === 'reconnecting') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-zinc-900 dark:border-zinc-50 mx-auto mb-4"></div>
+          <p className="text-zinc-600 dark:text-zinc-400">
+            Reconnecting... (Attempt {status.reconnectAttempts || 0})
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (status.status === 'disconnected' || status.status === 'error') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+          <h2 className="text-xl font-semibold mb-4 text-red-600 dark:text-red-400">
+            Connection Failed
+          </h2>
+          <p className="text-zinc-600 dark:text-zinc-400 mb-6">
+            {status.status === 'disconnected' 
+              ? 'WhatsApp connection was lost. Please reconnect.'
+              : 'An error occurred. Please try again.'}
+          </p>
+          <button
+            onClick={async () => {
+              try {
+                await fetch(`${API_URL}/bot/reconnect`, { method: 'POST' });
+              } catch (err) {
+                console.error(err);
+              }
+            }}
+            className="px-6 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
+          >
+            Reconnect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Show current status with reconnect option
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+      <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-8 text-center max-w-md">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-zinc-900 dark:border-zinc-50 mx-auto mb-4"></div>
+        <h2 className="text-xl font-semibold mb-2 text-black dark:text-zinc-50">
+          Status: {status.status || 'unknown'}
+        </h2>
+        <p className="text-zinc-600 dark:text-zinc-400 mb-4">
+          {status.qr ? 'QR code expired. Reconnecting...' : 'Waiting for QR code from backend...'}
+        </p>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-4">
+          Check backend terminal - QR code should appear there
+        </p>
+        <button
+          onClick={async () => {
+                  try {
+                    const res = await fetch(`${API_URL}/bot/reconnect`, { method: 'POST' });
+                    if (!res.ok) {
+                      const text = await res.text();
+                      throw new Error(`Reconnect failed: ${res.status} ${text.substring(0, 100)}`);
+                    }
+                    const contentType = res.headers.get('content-type');
+                    let data;
+                    if (contentType && contentType.includes('application/json')) {
+                      data = await res.json();
+                    } else {
+                      const text = await res.text();
+                      console.error('Invalid response:', text);
+                      data = { success: false };
+                    }
+              console.log('Reconnect response:', data);
+              // Force status check after reconnect
+              setTimeout(() => {
+                window.location.reload();
+              }, 1000);
+            } catch (err) {
+              console.error('Reconnect error:', err);
+            }
+          }}
+          className="px-6 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
+        >
+          Reconnect / Get New QR
+        </button>
+      </div>
+    </div>
+  );
+}
+

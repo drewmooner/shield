@@ -3,15 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3001",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3001",
     "lint": "eslint"
   },
   "dependencies": {
     "next": "16.1.2",
+    "qrcode.react": "^3.2.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
+  },
+  "overrides": {
+    "qrcode.react": {
+      "react": "$react"
+    }
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

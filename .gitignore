@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Shield specific - sensitive data
+backend/sessions/
+data/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!next.config.ts
