@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode.react';
+import { useSocketContext } from '../providers/SocketProvider';
 
 const API_URL = typeof window !== 'undefined' 
   ? (process.env.NEXT_PUBLIC_API_URL || '/api')
@@ -18,38 +19,55 @@ interface BotStatus {
 export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   const [status, setStatus] = useState<BotStatus>({ status: 'initializing' });
   const [error, setError] = useState<string | null>(null);
+  const { socket, connected } = useSocketContext();
+
+  const checkStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/bot/status`);
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+      const data = await res.json();
+      console.log('Bot status:', data); // Debug log
+      console.log('Status:', data.status, 'QR:', data.qr ? `Present (${data.qr.substring(0, 20)}...)` : 'Missing', 'isConnected:', data.isConnected);
+      setStatus(data);
+      setError(null);
+
+      if (data.status === 'connected' && data.isConnected) {
+        onConnected();
+      }
+    } catch (err) {
+      setError('Failed to connect to backend. Make sure the backend is running on port 3002.');
+      console.error('Backend connection error:', err);
+    }
+  };
 
   useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const res = await fetch(`${API_URL}/bot/status`);
-        if (!res.ok) {
-          throw new Error(`Backend returned ${res.status}`);
-        }
-        const data = await res.json();
-        console.log('Bot status:', data); // Debug log
-        console.log('Status:', data.status, 'QR:', data.qr ? `Present (${data.qr.substring(0, 20)}...)` : 'Missing', 'isConnected:', data.isConnected);
-        setStatus(data);
-        setError(null);
-
-        if (data.status === 'connected' && data.isConnected) {
-          onConnected();
-        }
-      } catch (err) {
-        setError('Failed to connect to backend. Make sure the backend is running on port 3002.');
-        console.error('Backend connection error:', err);
-      }
-    };
-
     // Check immediately
     checkStatus();
     // Then check again after 500ms for faster initial load
     setTimeout(checkStatus, 500);
-    // Then poll every 1 second
-    const interval = setInterval(checkStatus, 1000);
-
-    return () => clearInterval(interval);
   }, [onConnected]);
+
+  // Set up WebSocket listener for real-time status updates
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleStatusUpdate = (data: BotStatus) => {
+      setStatus(data);
+      setError(null);
+
+      if (data.status === 'connected' && data.isConnected) {
+        onConnected();
+      }
+    };
+
+    socket.on('status_update', handleStatusUpdate);
+
+    return () => {
+      socket.off('status_update', handleStatusUpdate);
+    };
+  }, [socket, connected, onConnected]);
 
   if (error) {
     return (

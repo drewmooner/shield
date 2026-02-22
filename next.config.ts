@@ -13,6 +13,11 @@ const nextConfig: NextConfig = {
         source: '/api/:path*',
         destination: `${backendUrl}/api/:path*`,
       },
+      // Socket.IO rewrite - needed for WebSocket connections
+      {
+        source: '/socket.io/:path*',
+        destination: `${backendUrl}/socket.io/:path*`,
+      },
     ];
   },
 };

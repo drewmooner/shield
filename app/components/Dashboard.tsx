@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getLeads, exportChatLogs } from '../lib/api';
+import { useSocketContext } from '../providers/SocketProvider';
 
 interface Lead {
   id: string;
@@ -20,25 +21,96 @@ interface Lead {
   } | null;
 }
 
+interface LeadWithUnread extends Lead {
+  hasNewMessage?: boolean;
+  lastViewedMessageId?: string;
+}
+
 export default function Dashboard() {
-  const [leads, setLeads] = useState<Lead[]>([]);
+  const [leads, setLeads] = useState<LeadWithUnread[]>([]);
   const [filter, setFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [backendError, setBackendError] = useState(false);
+  const [lastMessageIds, setLastMessageIds] = useState<Record<string, string>>({});
+  const { socket, connected } = useSocketContext();
 
   useEffect(() => {
     loadLeads();
-    // Poll every 100ms for immediate real-time updates
-    const interval = setInterval(loadLeads, 100);
-    return () => clearInterval(interval);
   }, [filter]);
+
+  // ─── Refresh UI when WebSocket connects ──────────────────────────────────
+  useEffect(() => {
+    if (connected) {
+      console.log('🔄 Dashboard: WebSocket connected - refreshing leads...');
+      // Clear old leads and reload fresh data
+      setLeads([]);
+      setLastMessageIds({});
+      loadLeads();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected]); // loadLeads is stable enough, no need to include
+
+  // Set up WebSocket listeners
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleLeadsChanged = () => {
+      setLeads([]); // Clear immediately so UI shows empty
+      loadLeads();
+    };
+
+    const handleNewMessage = (data: any) => {
+      console.log('📨 Dashboard: New message received for lead:', data?.leadId);
+      loadLeads();
+    };
+
+    socket.on('leads_changed', handleLeadsChanged);
+    socket.on('new_message', handleNewMessage);
+    
+    // Log WebSocket connection status
+    console.log('📡 Dashboard WebSocket listeners attached');
+
+    return () => {
+      socket.off('leads_changed', handleLeadsChanged);
+      socket.off('new_message', handleNewMessage);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, connected]); // filter is handled by loadLeads closure, loadLeads is stable
 
   const loadLeads = async () => {
     try {
       // Add timestamp to prevent caching
-      const data = await getLeads(filter === 'all' ? undefined : filter);
-      // Force state update even if data appears same (React might skip update)
-      setLeads([...data]);
+      const data = await getLeads(filter === 'all' ? undefined : filter) as Lead[];
+      
+      // Check for new messages by comparing last message IDs
+      setLastMessageIds(prev => {
+        const newIds: Record<string, string> = { ...prev };
+        const leadsWithUnread: LeadWithUnread[] = data.map(lead => {
+          const lastMessageId = lead.lastMessage 
+            ? `${lead.id}-${lead.lastMessage.timestamp}-${lead.lastMessage.content.substring(0, 20)}`
+            : null;
+          
+          const previousLastMessageId = prev[lead.id];
+          const hasNewMessage = lastMessageId && lastMessageId !== previousLastMessageId && 
+                               lead.lastMessage?.sender === 'user';
+          
+          // Update last message ID tracking
+          if (lastMessageId) {
+            newIds[lead.id] = lastMessageId;
+          }
+          
+          return {
+            ...lead,
+            hasNewMessage: hasNewMessage || false,
+            lastViewedMessageId: previousLastMessageId || null
+          };
+        });
+        
+        // Force state update even if data appears same (React might skip update)
+        setLeads(leadsWithUnread);
+        return newIds;
+      });
+      
       setBackendError(false);
     } catch (err) {
       console.error(err);
@@ -48,15 +120,25 @@ export default function Dashboard() {
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200';
-      case 'replied':
-        return 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200';
-      default:
-        return 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200';
+  const getStatusDotColor = (lead: LeadWithUnread) => {
+    // Green dot = new unread messages
+    if (lead.hasNewMessage) {
+      return 'bg-green-500';
     }
+    // Blue dot = bot has replied
+    if (lead.status === 'replied') {
+      return 'bg-blue-500';
+    }
+    // Yellow dot = viewed but bot hasn't replied yet (pending)
+    if (lead.status === 'pending') {
+      return 'bg-yellow-500';
+    }
+    // Green dot for completed (optional, or you can use a different color)
+    if (lead.status === 'completed') {
+      return 'bg-green-500';
+    }
+    // Default to yellow for pending
+    return 'bg-yellow-500';
   };
 
   if (loading) {
@@ -72,6 +154,7 @@ export default function Dashboard() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <h1 className="text-xl sm:text-2xl font-bold text-black dark:text-zinc-50">Chats</h1>
         <div className="flex gap-2 flex-wrap">
+
             <button
               onClick={() => setFilter('all')}
               className={`px-4 py-2 rounded-lg text-sm ${
@@ -157,8 +240,8 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
-                    {/* Profile Picture */}
-                    <div className="flex-shrink-0">
+                    {/* Profile Picture with Status Dot Indicator */}
+                    <div className="flex-shrink-0 relative">
                       {lead.profilePictureUrl ? (
                         <img 
                           src={lead.profilePictureUrl} 
@@ -178,6 +261,8 @@ export default function Dashboard() {
                       >
                         {(lead.contactName || lead.phone_number).charAt(0).toUpperCase()}
                       </div>
+                      {/* Status dot indicator: Green (new), Yellow (pending), Blue (replied) */}
+                      <div className={`absolute -top-0.5 -right-0.5 w-3 h-3 ${getStatusDotColor(lead)} rounded-full border-2 border-white dark:border-zinc-900 ${lead.hasNewMessage ? 'animate-pulse' : ''}`}></div>
                     </div>
                     
                     {/* Contact Name */}
@@ -191,17 +276,12 @@ export default function Dashboard() {
                         </span>
                       )}
                     </div>
-                    <span
-                      className={`text-xs px-2 py-1 rounded ${getStatusColor(lead.status)}`}
-                    >
-                      {lead.status}
-                    </span>
                     <span className="text-xs text-zinc-500 dark:text-zinc-400">
                       {lead.reply_count} replies
                     </span>
                   </div>
                   {lead.lastMessage && (
-                    <p className="text-sm text-zinc-600 dark:text-zinc-400 truncate">
+                    <p className={`text-sm truncate ${lead.hasNewMessage ? 'font-semibold text-black dark:text-zinc-50' : 'text-zinc-600 dark:text-zinc-400'}`}>
                       <span className="font-medium">
                         {lead.lastMessage.sender === 'user' ? 'User' : 'Shield'}:
                       </span>{' '}

@@ -1,26 +1,41 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getSettings, updateSettings, exportChatLogs } from '../lib/api';
+import { getSettings, updateSettings, exportChatLogs, refreshContactNames } from '../lib/api';
+import { useSocketContext } from '../providers/SocketProvider';
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({});
-  const [templates, setTemplates] = useState<string[]>([]);
+  const [productInfo, setProductInfo] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [newTemplate, setNewTemplate] = useState('');
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editValue, setEditValue] = useState('');
+  const { socket, connected } = useSocketContext();
 
   useEffect(() => {
     loadSettings();
   }, []);
 
+  // Listen for WebSocket settings updates
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleSettingsUpdate = (data: any) => {
+      setSettings(data);
+      setProductInfo(data.product_info || '');
+    };
+
+    socket.on('settings_updated', handleSettingsUpdate);
+
+    return () => {
+      socket.off('settings_updated', handleSettingsUpdate);
+    };
+  }, [socket, connected]);
+
   const loadSettings = async () => {
     try {
       const data = await getSettings();
       setSettings(data);
-      setTemplates(data.templates || []);
+      setProductInfo(data.product_info || '');
     } catch (err) {
       console.error(err);
     } finally {
@@ -31,11 +46,14 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Don't send API key or model to backend (they're managed via environment variables)
+      const { openrouter_api_key, ai_model, ...settingsToSave } = settings;
       await updateSettings({
-        ...settings,
-        templates,
+        ...settingsToSave,
+        product_info: productInfo,
       });
-      alert('Settings saved!');
+      // Settings will be updated via WebSocket event, no need to reload
+      console.log(`✅ Auto-reply ${settings.auto_reply_enabled === 'true' ? 'enabled' : 'disabled'} - takes effect immediately`);
     } catch (err) {
       console.error(err);
       alert('Failed to save settings');
@@ -44,35 +62,35 @@ export default function SettingsPage() {
     }
   };
 
-  const addTemplate = () => {
-    if (newTemplate.trim()) {
-      setTemplates([...templates, newTemplate]);
-      setNewTemplate('');
+  // Auto-save auto-reply toggle immediately (merged with AI - one toggle controls both)
+  const handleAutoReplyToggle = async (enabled: boolean) => {
+    const previousSettings = { ...settings };
+    // When auto-reply is enabled, also enable AI (they're merged now)
+    const newSettings = { 
+      ...settings, 
+      auto_reply_enabled: enabled ? 'true' : 'false',
+      ai_enabled: enabled ? 'true' : 'false' // Sync AI with auto-reply
+    };
+    setSettings(newSettings);
+    
+    // Save immediately
+    setSaving(true);
+    try {
+      const { openrouter_api_key, ai_model, ...settingsToSave } = newSettings;
+      await updateSettings({
+        ...settingsToSave,
+        product_info: productInfo,
+      });
+      // Settings will sync via WebSocket event - no need to reload
+      console.log(`✅ Auto-reply ${enabled ? 'enabled' : 'disabled'} - takes effect immediately`);
+    } catch (err) {
+      console.error('Failed to save auto-reply setting:', err);
+      // Revert on error
+      setSettings(previousSettings);
+      alert('Failed to update auto-reply setting. Please try again.');
+    } finally {
+      setSaving(false);
     }
-  };
-
-  const removeTemplate = (index: number) => {
-    setTemplates(templates.filter((_, i) => i !== index));
-  };
-
-  const startEdit = (index: number) => {
-    setEditingIndex(index);
-    setEditValue(templates[index]);
-  };
-
-  const saveEdit = (index: number) => {
-    if (editValue.trim()) {
-      const newTemplates = [...templates];
-      newTemplates[index] = editValue.trim();
-      setTemplates(newTemplates);
-      setEditingIndex(null);
-      setEditValue('');
-    }
-  };
-
-  const cancelEdit = () => {
-    setEditingIndex(null);
-    setEditValue('');
   };
 
   if (loading) {
@@ -114,6 +132,25 @@ export default function SettingsPage() {
           >
             Export CSV
           </button>
+          <button
+            onClick={async () => {
+              if (!confirm('This will refresh all contact names directly from WhatsApp. This may take a few moments. Continue?')) {
+                return;
+              }
+              try {
+                const result = await refreshContactNames();
+                alert(`Contact names refreshed!\nUpdated: ${result.updated || 0}\nErrors: ${result.errors || 0}\nTotal: ${result.total || 0}`);
+                // Reload page to show updated names
+                window.location.reload();
+              } catch (err: any) {
+                console.error(err);
+                alert(`Failed to refresh contact names: ${err.message}`);
+              }
+            }}
+            className="px-4 py-2 rounded-lg text-sm bg-purple-600 text-white hover:bg-purple-700 transition-colors"
+          >
+            Refresh Contact Names
+          </button>
         </div>
       </div>
 
@@ -149,6 +186,20 @@ export default function SettingsPage() {
         </div>
 
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
+          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">Product Information</h2>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
+            Enter information about your product or service here. The AI will use this information to answer customer questions when AI is enabled.
+          </p>
+          <textarea
+            value={productInfo}
+            onChange={(e) => setProductInfo(e.target.value)}
+            rows={8}
+            className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 resize-y"
+            placeholder="Enter product/service information, features, pricing, etc. This will be used by AI to answer customer questions."
+          />
+        </div>
+
+        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
           <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">Delay Settings</h2>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -181,148 +232,33 @@ export default function SettingsPage() {
         </div>
 
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">AI Settings</h2>
+          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">Auto-Reply Settings</h2>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <div>
+              <div className="flex-1">
                 <label className="block text-sm font-medium mb-1 text-zinc-700 dark:text-zinc-300">
-                  Enable AI Responses
+                  Enable Auto-Reply
                 </label>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  When enabled, Shield will use AI to respond naturally to conversations and intelligently select templates when users ask about links/products.
+                  When enabled, Shield will automatically respond to incoming messages. If OpenRouter API key is configured, AI will be used for intelligent responses. Otherwise, a simple acknowledgment message will be sent.
                 </p>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={settings.ai_enabled === 'true'}
-                  onChange={(e) =>
-                    setSettings({ ...settings, ai_enabled: e.target.checked ? 'true' : 'false' })
-                  }
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-zinc-300 dark:bg-zinc-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-zinc-300 dark:peer-focus:ring-zinc-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
-              </label>
-            </div>
-            {settings.ai_enabled === 'true' && (
-              <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
-                <div className="mb-4">
-                  <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                    OpenRouter API Key
-                  </label>
-                  <input
-                    type="password"
-                    value={settings.openrouter_api_key || ''}
-                    onChange={(e) => setSettings({ ...settings, openrouter_api_key: e.target.value })}
-                    className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-                    placeholder="sk-or-v1-..."
-                  />
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                    Get your API key from{' '}
-                    <a href="https://openrouter.ai" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">
-                      openrouter.ai
-                    </a>
+                {saving && (
+                  <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+                    Saving...
                   </p>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                    AI Model
-                  </label>
-                  <select
-                    value={settings.ai_model || 'openai/gpt-3.5-turbo'}
-                    onChange={(e) => setSettings({ ...settings, ai_model: e.target.value })}
-                    className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-                  >
-                    <option value="openai/gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                    <option value="openai/gpt-4">GPT-4</option>
-                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
-                    <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
-                    <option value="google/gemini-pro">Gemini Pro</option>
-                  </select>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">
-            Message Templates
-          </h2>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
-            Use link placeholders in your templates:
-            <br />
-            • <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">{'{{primary_link}}'}</code> or <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">{'{{link}}'}</code> for primary link
-            <br />
-            • <code className="bg-zinc-100 dark:bg-zinc-800 px-1 rounded">{'{{backup_link}}'}</code> for backup link
-            <br />
-            The AI will automatically choose which link to use based on the user's question.
-          </p>
-          <div className="space-y-2 mb-4">
-            {templates.map((template, index) => (
-              <div key={index} className="flex items-center gap-2">
-                {editingIndex === index ? (
-                  <>
-                    <input
-                      type="text"
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      className="flex-1 px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-                      autoFocus
-                    />
-                    <button
-                      onClick={() => saveEdit(index)}
-                      className="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={cancelEdit}
-                      className="px-3 py-2 bg-zinc-600 text-white rounded-lg hover:bg-zinc-700"
-                    >
-                      Cancel
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      type="text"
-                      value={template}
-                      readOnly
-                      className="flex-1 px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-zinc-50 dark:bg-zinc-800 text-black dark:text-zinc-50 cursor-not-allowed"
-                    />
-                    <button
-                      onClick={() => startEdit(index)}
-                      className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => removeTemplate(index)}
-                      className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
-                    >
-                      Remove
-                    </button>
-                  </>
                 )}
               </div>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newTemplate}
-              onChange={(e) => setNewTemplate(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && addTemplate()}
-              placeholder="New template..."
-              className="flex-1 px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-            />
-            <button
-              onClick={addTemplate}
-              className="px-4 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200"
-            >
-              Add
-            </button>
+              <label className="relative inline-flex items-center cursor-pointer flex-shrink-0 ml-4">
+                <input
+                  type="checkbox"
+                  checked={settings.auto_reply_enabled === 'true'}
+                  onChange={(e) => handleAutoReplyToggle(e.target.checked)}
+                  disabled={saving}
+                  className="sr-only peer"
+                />
+                <div className={`w-11 h-6 bg-zinc-300 dark:bg-zinc-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-zinc-300 dark:peer-focus:ring-zinc-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600 ${saving ? 'opacity-50 cursor-not-allowed' : ''}`}></div>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -339,4 +275,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-

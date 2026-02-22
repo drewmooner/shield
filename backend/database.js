@@ -62,27 +62,28 @@ class Database {
   async getLeadByPhone(phoneNumber) {
     await this.db.read();
     const normalized = this.normalizePhoneNumber(phoneNumber);
-    
-    // First try exact match
+    if (!normalized) return null;
+
     let lead = this.db.data.leads.find(l => l.phone_number === phoneNumber);
-    
-    // If not found, try normalized match
-    if (!lead) {
-      lead = this.db.data.leads.find(l => {
-        const existingNormalized = this.normalizePhoneNumber(l.phone_number);
-        return existingNormalized === normalized && normalized !== '';
-      });
-    }
-    
+    if (lead) return lead;
+    lead = this.db.data.leads.find(l => this.normalizePhoneNumber(l.phone_number) === normalized);
+    if (lead) return lead;
+
+    // Suffix match: same contact with/without country code (e.g. 23487544536539327 vs 87544536539327)
+    lead = this.db.data.leads.find(l => {
+      const existingNorm = this.normalizePhoneNumber(l.phone_number);
+      return existingNorm && (existingNorm.endsWith(normalized) || normalized.endsWith(existingNorm));
+    });
     return lead || null;
   }
 
-  async createLead(phoneNumber, contactName = null, profilePictureUrl = null) {
+  async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null) {
     await this.db.read();
     const id = randomUUID();
     const lead = {
       id,
       phone_number: phoneNumber,
+      jid: jid || null, // Store full JID including @lid for accurate contact matching
       contact_name: contactName || null,
       profile_picture_url: profilePictureUrl || null,
       reply_count: 0,
@@ -95,16 +96,49 @@ class Database {
     return lead;
   }
 
-  async updateLeadContactInfo(leadId, contactName, profilePictureUrl) {
+  async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null) {
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
       if (contactName) lead.contact_name = contactName;
       if (profilePictureUrl) lead.profile_picture_url = profilePictureUrl;
+      if (jid) lead.jid = jid; // Update JID if provided
       lead.updated_at = new Date().toISOString();
       await this.db.write();
     }
     return lead;
+  }
+
+  // Canonical JID format - use same format for incoming and outgoing to avoid duplicate leads
+  getCanonicalJid(phoneNumber) {
+    const n = this.normalizePhoneNumber(phoneNumber);
+    return n ? `${n}@s.whatsapp.net` : null;
+  }
+
+  async getLeadByJid(jid) {
+    await this.db.read();
+    const canonical = this.getCanonicalJid(jid.replace('@s.whatsapp.net', '').replace(/@lid.*/, ''));
+    // Try exact match (canonical or stored JID)
+    let lead = canonical ? this.db.data.leads.find(l => l.jid === canonical) : null;
+    if (lead) return lead;
+    lead = this.db.data.leads.find(l => l.jid === jid);
+    if (lead) return lead;
+
+    // Fallback to phone number match (getLeadByPhone includes suffix match for country code variants)
+    const phoneFromJid = jid.replace('@s.whatsapp.net', '').replace(/@lid.*/, '');
+    const normalized = this.normalizePhoneNumber(phoneFromJid);
+    if (normalized) {
+      lead = await this.getLeadByPhone(normalized);
+      // Store canonical JID so incoming and outgoing use same lead
+      if (lead) {
+        const leadCanonical = this.getCanonicalJid(lead.phone_number);
+        if (leadCanonical && lead.jid !== leadCanonical) {
+          lead.jid = leadCanonical;
+          await this.db.write();
+        }
+      }
+    }
+    return lead || null;
   }
 
   async getOrCreateLead(phoneNumber) {
@@ -113,7 +147,7 @@ class Database {
     const normalized = this.normalizePhoneNumber(phoneNumber);
     
     // Try to find existing lead with normalized matching
-    let lead = this.getLeadByPhone(phoneNumber);
+    let lead = await this.getLeadByPhone(phoneNumber);
     
     if (!lead) {
       // Create new lead with normalized phone number
@@ -215,6 +249,46 @@ class Database {
     await this.db.write();
   }
 
+  async clearAllMessages() {
+    try {
+      await this.db.read();
+      const messageCount = this.db.data.messages ? this.db.data.messages.length : 0;
+      
+      // Ensure messages array exists
+      if (!this.db.data.messages) {
+        this.db.data.messages = [];
+      } else {
+        this.db.data.messages = [];
+      }
+      
+      await this.db.write();
+      console.log(`🧹 Cleared ${messageCount} messages from database`);
+      return messageCount;
+    } catch (error) {
+      console.error('❌ Error clearing messages:', error);
+      throw error;
+    }
+  }
+
+  /** Clear everything: all leads and all messages. UI will be empty until new messages arrive. */
+  async clearAll() {
+    try {
+      await this.db.read();
+      const leadCount = this.db.data.leads ? this.db.data.leads.length : 0;
+      const messageCount = this.db.data.messages ? this.db.data.messages.length : 0;
+
+      this.db.data.leads = [];
+      this.db.data.messages = [];
+
+      await this.db.write();
+      console.log(`🧹 Cleared ${leadCount} leads and ${messageCount} messages - fresh start`);
+      return { leadCount, messageCount };
+    } catch (error) {
+      console.error('❌ Error clearing all:', error);
+      throw error;
+    }
+  }
+
   async updateMessageStatus(messageId, status) {
     await this.db.read();
     const message = this.db.data.messages.find(m => m.id === messageId);
@@ -241,21 +315,13 @@ class Database {
     return { ...this.db.data.settings };
   }
 
-  // Templates operations (stored in settings as JSON)
-  async getTemplates() {
-    const templatesJson = await this.getSetting('templates');
-    if (templatesJson) {
-      return JSON.parse(templatesJson);
-    }
-    return [
-      'Hi! Thanks for reaching out. Check this out: {{link}}',
-      'Hello! Interested? Visit: {{link}}',
-      'Thanks for your message! Learn more here: {{link}}'
-    ];
+  // Product information operations
+  async getProductInfo() {
+    return await this.getSetting('product_info') || '';
   }
 
-  async setTemplates(templates) {
-    await this.setSetting('templates', JSON.stringify(templates));
+  async setProductInfo(productInfo) {
+    await this.setSetting('product_info', productInfo);
   }
 
   // Bot logs

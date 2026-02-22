@@ -6,12 +6,14 @@ import Nav from './components/Nav';
 import StatusBar from './components/StatusBar';
 import Dashboard from './components/Dashboard';
 import { getBotStatus } from './lib/api';
+import { useSocketContext } from './providers/SocketProvider';
 
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
   const [checking, setChecking] = useState(true);
+  const { socket, connected: socketConnected } = useSocketContext();
 
-  // Check connection status on mount and when disconnected
+  // Check connection status on mount
   useEffect(() => {
     const checkConnection = async () => {
       try {
@@ -26,12 +28,22 @@ export default function Home() {
     };
 
     checkConnection();
-    
-    // Poll connection status every 2 seconds to detect disconnection
-    const interval = setInterval(checkConnection, 2000);
-    
-    return () => clearInterval(interval);
   }, []);
+
+  // Listen for status updates via WebSocket
+  useEffect(() => {
+    if (!socket || !socketConnected) return;
+
+    const handleStatusUpdate = (data: any) => {
+      setIsConnected(data.status === 'connected' && data.isConnected);
+    };
+
+    socket.on('status_update', handleStatusUpdate);
+
+    return () => {
+      socket.off('status_update', handleStatusUpdate);
+    };
+  }, [socket, socketConnected]);
 
   // Show loading while checking initial status
   if (checking) {

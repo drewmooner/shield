@@ -118,6 +118,15 @@ export async function deleteLead(id: string) {
   return safeJsonResponse(res);
 }
 
+export async function clearAllMessages() {
+  const res = await fetch(`${API_URL}/messages/clear`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to clear messages: ${res.status} ${text.substring(0, 100)}`);
+  }
+  return safeJsonResponse(res);
+}
+
 export async function sendMessage(phoneNumber: string, message: string) {
   const res = await fetch(`${API_URL}/messages/send`, {
     method: 'POST',
@@ -196,3 +205,11 @@ export async function exportChatLogs(format: 'json' | 'csv' = 'json') {
   }
 }
 
+export async function refreshContactNames() {
+  const res = await fetch(`${API_URL}/contacts/refresh`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to refresh contact names: ${res.status} ${text.substring(0, 100)}`);
+  }
+  return safeJsonResponse(res);
+}

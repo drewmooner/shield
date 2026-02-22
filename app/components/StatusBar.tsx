@@ -2,30 +2,52 @@
 
 import { useEffect, useState } from 'react';
 import { getBotStatus, pauseBot, resumeBot, disconnectBot, getLogs } from '../lib/api';
+import { useSocketContext } from '../providers/SocketProvider';
 
 export default function StatusBar() {
   const [status, setStatus] = useState<any>({});
   const [loading, setLoading] = useState(false);
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [showLogs, setShowLogs] = useState(false);
+  const { socket, connected } = useSocketContext();
+
+  const updateStatus = async () => {
+    const data = await getBotStatus();
+    setStatus(data);
+    
+    // Get recent logs
+    try {
+      const logs = await getLogs(15);
+      setRecentLogs(logs);
+    } catch (err) {
+      console.error('Failed to fetch logs:', err);
+    }
+  };
 
   useEffect(() => {
-    const updateStatus = async () => {
-      const data = await getBotStatus();
-      setStatus(data);
-      
-      // Get recent logs
-      try {
-        const logs = await getLogs(15);
-        setRecentLogs(logs);
-      } catch (err) {
-        console.error('Failed to fetch logs:', err);
-      }
-    };
     updateStatus();
-    const interval = setInterval(updateStatus, 3000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Set up WebSocket listeners for real-time status updates
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleStatusUpdate = (data: any) => {
+      setStatus(data);
+    };
+
+    const handleBotStatusChanged = (data: any) => {
+      updateStatus();
+    };
+
+    socket.on('status_update', handleStatusUpdate);
+    socket.on('bot_status_changed', handleBotStatusChanged);
+
+    return () => {
+      socket.off('status_update', handleStatusUpdate);
+      socket.off('bot_status_changed', handleBotStatusChanged);
+    };
+  }, [socket, connected]);
 
   const handlePauseResume = async () => {
     setLoading(true);

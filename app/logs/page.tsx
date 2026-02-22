@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getLogs } from '../lib/api';
+import { useSocketContext } from '../providers/SocketProvider';
 
 interface Log {
   id: number;
@@ -13,12 +14,30 @@ interface Log {
 export default function LogsPage() {
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(true);
+  const { socket, connected } = useSocketContext();
 
   useEffect(() => {
     loadLogs();
-    const interval = setInterval(loadLogs, 5000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Set up WebSocket listener for new logs
+  useEffect(() => {
+    if (!socket || !connected) return;
+
+    const handleNewLog = () => {
+      loadLogs();
+    };
+
+    socket.on('leads_changed', handleNewLog);
+    socket.on('new_message', handleNewLog);
+    socket.on('status_update', handleNewLog);
+
+    return () => {
+      socket.off('leads_changed', handleNewLog);
+      socket.off('new_message', handleNewLog);
+      socket.off('status_update', handleNewLog);
+    };
+  }, [socket, connected]);
 
   const loadLogs = async () => {
     try {
