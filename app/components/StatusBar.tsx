@@ -116,7 +116,7 @@ export default function StatusBar() {
   };
 
   const isPaused = status.bot_paused === 'true';
-  const isConnected = status.status === 'connected' && status.isConnected;
+  const isConnected = status.status === 'connected' && status.isConnected === true;
   const isReconnecting = status.status === 'reconnecting' || status.status === 'connecting';
 
   const getStatusColor = () => {
