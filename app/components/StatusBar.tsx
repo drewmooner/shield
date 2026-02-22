@@ -5,9 +5,9 @@ import { getBotStatus, pauseBot, resumeBot, disconnectBot, getLogs } from '../li
 import { useSocketContext } from '../providers/SocketProvider';
 
 export default function StatusBar() {
-  const [status, setStatus] = useState<any>({});
+  const [status, setStatus] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(false);
-  const [recentLogs, setRecentLogs] = useState<any[]>([]);
+  const [recentLogs, setRecentLogs] = useState<Record<string, unknown>[]>([]);
   const [showLogs, setShowLogs] = useState(false);
   const { socket, connected } = useSocketContext();
 
@@ -32,11 +32,11 @@ export default function StatusBar() {
   useEffect(() => {
     if (!socket || !connected) return;
 
-    const handleStatusUpdate = (data: any) => {
+    const handleStatusUpdate = (data: Record<string, unknown>) => {
       setStatus(data);
     };
 
-    const handleBotStatusChanged = (data: any) => {
+    const handleBotStatusChanged = () => {
       updateStatus();
     };
 

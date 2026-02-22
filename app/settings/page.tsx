@@ -5,7 +5,7 @@ import { getSettings, updateSettings, exportChatLogs, refreshContactNames } from
 import { useSocketContext } from '../providers/SocketProvider';
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<any>({});
+  const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [productInfo, setProductInfo] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -19,9 +19,9 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!socket || !connected) return;
 
-    const handleSettingsUpdate = (data: any) => {
+    const handleSettingsUpdate = (data: Record<string, unknown>) => {
       setSettings(data);
-      setProductInfo(data.product_info || '');
+      setProductInfo((data.product_info as string) || '');
     };
 
     socket.on('settings_updated', handleSettingsUpdate);
@@ -142,9 +142,10 @@ export default function SettingsPage() {
                 alert(`Contact names refreshed!\nUpdated: ${result.updated || 0}\nErrors: ${result.errors || 0}\nTotal: ${result.total || 0}`);
                 // Reload page to show updated names
                 window.location.reload();
-              } catch (err: any) {
+              } catch (err: unknown) {
                 console.error(err);
-                alert(`Failed to refresh contact names: ${err.message}`);
+                const msg = err instanceof Error ? err.message : String(err);
+                alert(`Failed to refresh contact names: ${msg}`);
               }
             }}
             className="px-4 py-2 rounded-lg text-sm bg-purple-600 text-white hover:bg-purple-700 transition-colors"

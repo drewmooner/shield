@@ -59,7 +59,7 @@ export default function Dashboard() {
       loadLeads();
     };
 
-    const handleNewMessage = (data: any) => {
+    const handleNewMessage = (data: Record<string, unknown>) => {
       console.log('📨 Dashboard: New message received for lead:', data?.leadId);
       loadLeads();
     };

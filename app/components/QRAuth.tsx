@@ -92,7 +92,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
             Service Temporarily Unavailable
           </h2>
           <p className="text-zinc-600 dark:text-zinc-400 mb-6">
-            We're having trouble connecting right now. Please try again in a moment.
+            We&apos;re having trouble connecting right now. Please try again in a moment.
           </p>
           <button
             onClick={() => {

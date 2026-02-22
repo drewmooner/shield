@@ -188,6 +188,7 @@ class WhatsAppHandler {
 
       // Load auth state
       console.log('📥 Loading auth state...');
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- Baileys auth helper, not a React hook
       const { state, saveCreds } = await useMultiFileAuthState(this.fullSessionPath);
       const hasCreds = !!state.creds && !!state.creds.me;
       console.log('✅ Auth state loaded');

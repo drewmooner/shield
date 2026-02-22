@@ -149,7 +149,7 @@ export async function getSettings() {
   return safeJsonResponse(res);
 }
 
-export async function updateSettings(settings: any) {
+export async function updateSettings(settings: Record<string, unknown>) {
   const res = await fetch(`${API_URL}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

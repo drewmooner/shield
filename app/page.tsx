@@ -34,7 +34,7 @@ export default function Home() {
   useEffect(() => {
     if (!socket || !socketConnected) return;
 
-    const handleStatusUpdate = (data: any) => {
+    const handleStatusUpdate = (data: Record<string, unknown>) => {
       setIsConnected(data.status === 'connected' && data.isConnected);
     };
 

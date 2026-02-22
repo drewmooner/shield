@@ -95,9 +95,10 @@ export default function LeadDetailPage() {
       
       setLead(data);
       console.log(`✅ Loaded lead ${leadId} with ${data.messages?.length || 0} messages`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('❌ loadLead error:', err);
-      if (err.message?.includes('404') || err.message?.includes('Lead not found')) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('404') || msg.includes('Lead not found')) {
         router.push('/');
       }
     } finally {
@@ -135,7 +136,7 @@ export default function LeadDetailPage() {
 
     if (!socket || !connected) return;
 
-    const handleStatusUpdate = (data: any) => {
+    const handleStatusUpdate = (data: Record<string, unknown>) => {
       if (data.status === 'connected' && data.isConnected && data.connectionTime && !connectionTimestampRef.current) {
         const backendConnectionTime = typeof data.connectionTime === 'number'
           ? data.connectionTime
@@ -169,7 +170,7 @@ export default function LeadDetailPage() {
   useEffect(() => {
     if (!socket || !connected) return;
 
-    const handleNewMessage = async (data: any) => {
+    const handleNewMessage = async (data: Record<string, unknown>) => {
       console.log('📨 new_message event received:', data);
       console.log('   Full event data:', JSON.stringify(data, null, 2));
 
@@ -229,7 +230,7 @@ export default function LeadDetailPage() {
       }
     };
 
-    const handleLeadUpdated = async (updatedLead: any) => {
+    const handleLeadUpdated = async (updatedLead: Record<string, unknown>) => {
       if (updatedLead?.id !== leadId) return;
       console.log('📋 lead_updated event');
       const fresh: Lead = await getLead(leadId);
@@ -240,7 +241,7 @@ export default function LeadDetailPage() {
     socket.on('lead_updated', handleLeadUpdated);
     
     // ✅ DEBUG: Listen for ALL socket events to see what's coming through
-    const debugHandler = (eventName: string, ...args: any[]) => {
+    const debugHandler = (eventName: string, ...args: unknown[]) => {
       if (eventName === 'new_message') {
         console.log('🔍 DEBUG: Raw new_message event:', args);
       }
