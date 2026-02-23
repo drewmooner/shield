@@ -4,10 +4,17 @@ import { useEffect, useState } from 'react';
 import { getBotStatus, pauseBot, resumeBot, disconnectBot, getLogs } from '../lib/api';
 import { useSocketContext } from '../providers/SocketProvider';
 
+interface LogEntry {
+  id?: number | string;
+  timestamp: string;
+  action: string;
+  details?: unknown;
+}
+
 export default function StatusBar() {
   const [status, setStatus] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(false);
-  const [recentLogs, setRecentLogs] = useState<Record<string, unknown>[]>([]);
+  const [recentLogs, setRecentLogs] = useState<LogEntry[]>([]);
   const [showLogs, setShowLogs] = useState(false);
   const { socket, connected } = useSocketContext();
 
@@ -17,7 +24,7 @@ export default function StatusBar() {
     
     // Get recent logs
     try {
-      const logs = await getLogs(15);
+      const logs = await getLogs(15) as LogEntry[];
       setRecentLogs(logs);
     } catch (err) {
       console.error('Failed to fetch logs:', err);
@@ -173,8 +180,8 @@ export default function StatusBar() {
             {recentLogs.length === 0 ? (
               <p className="text-xs text-zinc-500 dark:text-zinc-400">No logs available</p>
             ) : (
-              recentLogs.slice(0, 15).map((log) => (
-                <div key={log.id} className="text-xs text-zinc-600 dark:text-zinc-400 flex items-center gap-2">
+              recentLogs.slice(0, 15).map((log, index) => (
+                <div key={log.id != null ? String(log.id) : `log-${index}`} className="text-xs text-zinc-600 dark:text-zinc-400 flex items-center gap-2">
                   <span className="text-zinc-400 dark:text-zinc-500">
                     {new Date(log.timestamp).toLocaleString()}
                   </span>

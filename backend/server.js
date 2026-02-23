@@ -1,17 +1,29 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import multer from 'multer';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import Database from './database.js';
 import WhatsAppHandler from './whatsapp.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { existsSync, mkdirSync, createReadStream } from 'fs';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const dataDir = join(__dirname, 'data');
+const audioDir = join(dataDir, 'audio');
+if (!existsSync(audioDir)) mkdirSync(audioDir, { recursive: true });
+
+const audioStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, audioDir),
+  filename: (_req, file, cb) => cb(null, `welcome.${file.originalname.split('.').pop() || 'ogg'}`)
+});
+const uploadAudio = multer({ storage: audioStorage, limits: { fileSize: 16 * 1024 * 1024 } });
 
 const app = express();
 const httpServer = createServer(app);
@@ -546,9 +558,14 @@ app.get('/api/settings', async (req, res) => {
     const settings = await db.getAllSettings();
     const productInfo = await db.getProductInfo();
     
-    // Remove sensitive data before sending to frontend
     const { openrouter_api_key, ai_model, ...safeSettings } = settings;
-    
+    if (typeof safeSettings.keyword_replies === 'string') {
+      try {
+        safeSettings.keyword_replies = JSON.parse(safeSettings.keyword_replies);
+      } catch {
+        safeSettings.keyword_replies = [];
+      }
+    }
     res.json({ ...safeSettings, product_info: productInfo });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -558,17 +575,19 @@ app.get('/api/settings', async (req, res) => {
 // Update settings
 app.post('/api/settings', async (req, res) => {
   try {
-    const { product_info, ...otherSettings } = req.body;
+    const { product_info, keyword_replies, ...otherSettings } = req.body;
 
-    // Update product info separately
     if (product_info !== undefined) {
       await db.setProductInfo(product_info);
     }
 
-    // Update other settings
+    if (keyword_replies !== undefined) {
+      await db.setSetting('keyword_replies', typeof keyword_replies === 'string' ? keyword_replies : JSON.stringify(keyword_replies));
+    }
+
     for (const [key, value] of Object.entries(otherSettings)) {
       if (value !== undefined) {
-        await db.setSetting(key, String(value));
+        await db.setSetting(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
       }
     }
 
@@ -583,6 +602,35 @@ app.post('/api/settings', async (req, res) => {
     });
     
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Upload pre-recorded audio (multipart)
+app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No audio file' });
+    const relativePath = join('audio', req.file.filename);
+    await db.setSetting('welcome_audio_path', relativePath);
+    const fullPath = join(dataDir, relativePath);
+    res.json({ success: true, path: relativePath, url: `/api/settings/audio/file` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Serve saved audio for playback
+app.get('/api/settings/audio/file', async (req, res) => {
+  try {
+    const relativePath = await db.getSetting('welcome_audio_path');
+    if (!relativePath) return res.status(404).json({ error: 'No audio' });
+    const fullPath = join(dataDir, relativePath);
+    if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    const ext = fullPath.split('.').pop()?.toLowerCase() || 'ogg';
+    const mime = ext === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
+    res.setHeader('Content-Type', mime);
+    createReadStream(fullPath).pipe(res);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

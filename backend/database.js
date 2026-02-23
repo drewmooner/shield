@@ -43,9 +43,23 @@ class Database {
         bot_paused: 'false',
         ai_enabled: 'false',
         openrouter_api_key: '',
-        ai_model: 'openai/gpt-3.5-turbo'
+        ai_model: 'openai/gpt-3.5-turbo',
+        keyword_replies: '[]',
+        welcome_audio_path: '',
+        send_audio_when_inactive: 'false',
+        inactive_minutes: '5'
       };
       await this.db.write();
+    } else {
+      const defaults = { keyword_replies: '[]', welcome_audio_path: '', send_audio_when_inactive: 'false', inactive_minutes: '5' };
+      let changed = false;
+      for (const [k, v] of Object.entries(defaults)) {
+        if (this.db.data.settings[k] === undefined) {
+          this.db.data.settings[k] = v;
+          changed = true;
+        }
+      }
+      if (changed) await this.db.write();
     }
     
     console.log('Connected to JSON database');

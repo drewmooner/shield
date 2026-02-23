@@ -213,3 +213,23 @@ export async function refreshContactNames() {
   }
   return safeJsonResponse(res);
 }
+
+export function getAudioFileUrl(): string {
+  if (typeof window !== 'undefined') {
+    const base = process.env.NEXT_PUBLIC_API_URL || window.location.origin;
+    const api = base.replace(/\/api\/?$/, '') || window.location.origin;
+    return `${api}/api/settings/audio/file`;
+  }
+  return '/api/settings/audio/file';
+}
+
+export async function uploadAudio(file: File) {
+  const formData = new FormData();
+  formData.append('audio', file);
+  const res = await fetch(`${API_URL}/settings/audio`, { method: 'POST', body: formData });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Upload failed: ${text.substring(0, 100)}`);
+  }
+  return safeJsonResponse(res);
+}

@@ -23,7 +23,7 @@ interface Lead {
 
 interface LeadWithUnread extends Lead {
   hasNewMessage?: boolean;
-  lastViewedMessageId?: string | null;
+  lastViewedMessageId?: string;
 }
 
 export default function Dashboard() {
@@ -102,7 +102,7 @@ export default function Dashboard() {
           return {
             ...lead,
             hasNewMessage: hasNewMessage || false,
-            lastViewedMessageId: previousLastMessageId || null
+            lastViewedMessageId: previousLastMessageId ?? undefined
           };
         });
         

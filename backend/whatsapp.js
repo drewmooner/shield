@@ -4,7 +4,7 @@ import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, readFileSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1042,15 +1042,24 @@ class WhatsAppHandler {
         const isRecentMessage = true; // Message already passed timestamp filtering
         
         if (isRecentMessage && sender === 'user') {
-          // Check if we should auto-reply
           const autoReplyEnabled = await this.database.getSetting('auto_reply_enabled') === 'true';
           const botPaused = await this.database.getSetting('bot_paused') === 'true';
 
           if (autoReplyEnabled && !botPaused) {
-            // Queue auto-reply
-            this.messageQueue.add(async () => {
-              await this.sendAutoReply(lead, phoneNumber);
-            });
+            const keywordReply = await this.getKeywordReply(messageText);
+            if (keywordReply) {
+              this.messageQueue.add(async () => { await this.sendKeywordReply(lead, phoneNumber, keywordReply); });
+              await this.database.addLog('message_received', { phoneNumber, leadId: lead.id });
+              continue;
+            }
+            {
+              const shouldSendAudio = await this.shouldSendInactiveAudio(lead);
+              if (shouldSendAudio) {
+                this.messageQueue.add(async () => { await this.sendInactiveAudio(lead, phoneNumber); });
+              } else {
+                this.messageQueue.add(async () => { await this.sendAutoReply(lead, phoneNumber); });
+              }
+            }
           }
 
           await this.database.addLog('message_received', { phoneNumber, leadId: lead.id });
@@ -1076,9 +1085,98 @@ class WhatsAppHandler {
     }
   }
 
+  async getKeywordReply(text) {
+    const raw = await this.database.getSetting('keyword_replies');
+    let list = [];
+    try {
+      list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    } catch {
+      return null;
+    }
+    const normalized = (text || '').trim().toLowerCase();
+    if (!normalized) return null;
+    const entry = list.find(e => (e.keyword || '').trim().toLowerCase() === normalized);
+    if (!entry) return null;
+    return { message: (entry.message || '').trim(), replyType: entry.replyType === 'audio' ? 'audio' : 'text' };
+  }
+
+  async shouldSendInactiveAudio(lead) {
+    const sendWhenInactive = await this.database.getSetting('send_audio_when_inactive') === 'true';
+    const path = await this.database.getSetting('welcome_audio_path');
+    if (!sendWhenInactive || !path) return false;
+    const minutes = parseInt(await this.database.getSetting('inactive_minutes') || '5', 10);
+    const messages = await this.database.getMessagesByLead(lead.id);
+    const lastFromUser = messages.filter(m => m.sender === 'user').pop();
+    const lastFromShield = messages.filter(m => m.sender === 'shield').pop();
+    if (!lastFromUser) return false;
+    const userTime = new Date(lastFromUser.timestamp).getTime();
+    const shieldTime = lastFromShield ? new Date(lastFromShield.timestamp).getTime() : 0;
+    if (shieldTime >= userTime) return false;
+    const elapsed = (Date.now() - userTime) / 60000;
+    return elapsed >= minutes;
+  }
+
+  async sendKeywordReply(lead, phoneNumber, reply) {
+    const minDelay = parseInt(await this.database.getSetting('min_delay_seconds') || '3');
+    const maxDelay = parseInt(await this.database.getSetting('max_delay_seconds') || '10');
+    const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+    await new Promise(r => setTimeout(r, delay * 1000));
+    const jid = lead.jid || `${phoneNumber}@s.whatsapp.net`;
+    const isAudio = reply.replyType === 'audio';
+    if (isAudio) {
+      const relativePath = await this.database.getSetting('welcome_audio_path');
+      if (relativePath) {
+        const dataDir = join(__dirname, 'data');
+        const fullPath = join(dataDir, relativePath);
+        if (existsSync(fullPath)) {
+          await this.sendAudioMessage(jid, fullPath);
+        }
+      }
+    } else {
+      await this.sendMessage(jid, reply.message || '');
+    }
+    const timestamp = new Date().toISOString();
+    const content = isAudio ? '[Audio]' : (reply.message || '');
+    const savedMessage = await this.database.createMessage(lead.id, 'shield', content, 'replied', timestamp);
+    await this.database.incrementReplyCount(lead.id);
+    const updatedLead = await this.database.getLead(lead.id);
+    if (this.io) {
+      this.io.emit('new_message', { leadId: lead.id, message: { id: savedMessage.id, lead_id: lead.id, sender: 'shield', content, status: 'replied', timestamp: savedMessage.timestamp }, lead: updatedLead });
+      this.io.emit('leads_changed');
+    }
+    await this.database.addLog('keyword_reply_sent', { phoneNumber, leadId: lead.id, type: isAudio ? 'audio' : 'text' });
+  }
+
+  async sendInactiveAudio(lead, phoneNumber) {
+    const relativePath = await this.database.getSetting('welcome_audio_path');
+    if (!relativePath) return;
+    const dataDir = join(__dirname, 'data');
+    const fullPath = join(dataDir, relativePath);
+    if (!existsSync(fullPath)) return;
+    const jid = lead.jid || `${phoneNumber}@s.whatsapp.net`;
+    await this.sendAudioMessage(jid, fullPath);
+    const timestamp = new Date().toISOString();
+    await this.database.createMessage(lead.id, 'shield', '[Audio]', 'replied', timestamp);
+    await this.database.incrementReplyCount(lead.id);
+    const updatedLead = await this.database.getLead(lead.id);
+    if (this.io) {
+      this.io.emit('new_message', { leadId: lead.id, message: { id: null, lead_id: lead.id, sender: 'shield', content: '[Audio]', status: 'replied', timestamp }, lead: updatedLead });
+      this.io.emit('leads_changed');
+    }
+    await this.database.addLog('inactive_audio_sent', { phoneNumber, leadId: lead.id });
+  }
+
+  async sendAudioMessage(jid, fullPath) {
+    if (!this.sock || !this.isConnected) throw new Error('WhatsApp not connected');
+    const ext = fullPath.split('.').pop()?.toLowerCase() || 'ogg';
+    const mimetype = ext === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
+    const buffer = readFileSync(fullPath);
+    await this.sock.sendMessage(jid, { audio: buffer, mimetype });
+    await new Promise(r => setTimeout(r, 100));
+  }
+
   async sendAutoReply(lead, phoneNumber) {
     try {
-      // Get settings
       const productInfo = await this.database.getProductInfo();
       const primaryLink = await this.database.getSetting('primary_link') || 'https://example.com';
       const backupLink = await this.database.getSetting('backup_link') || '';
