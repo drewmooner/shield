@@ -35,7 +35,7 @@ export default function Home() {
     if (!socket || !socketConnected) return;
 
     const handleStatusUpdate = (data: Record<string, unknown>) => {
-      setIsConnected(data.status === 'connected' && data.isConnected);
+      setIsConnected(data.status === 'connected' && Boolean(data.isConnected));
     };
 
     socket.on('status_update', handleStatusUpdate);

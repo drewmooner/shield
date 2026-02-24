@@ -262,7 +262,7 @@ export default function SettingsPage() {
     // Save immediately
     setSaving(true);
     try {
-      const { openrouter_api_key, ai_model, ...settingsToSave } = newSettings;
+      const { openrouter_api_key, ai_model, ...settingsToSave } = newSettings as Record<string, unknown>;
       await updateSettings({
         ...settingsToSave,
         keyword_replies: keywordReplies,
@@ -459,7 +459,7 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={settings.min_delay_seconds ?? 3}
+                value={Number(settings.min_delay_seconds) || 3}
                 onChange={(e) =>
                   setSettings({ ...settings, min_delay_seconds: e.target.value })
                 }
@@ -473,7 +473,7 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={settings.max_delay_seconds ?? 10}
+                value={Number(settings.max_delay_seconds) || 10}
                 onChange={(e) =>
                   setSettings({ ...settings, max_delay_seconds: e.target.value })
                 }
@@ -487,7 +487,7 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={settings.view_delay_min_seconds ?? 1}
+                value={Number(settings.view_delay_min_seconds) || 1}
                 onChange={(e) =>
                   setSettings({ ...settings, view_delay_min_seconds: e.target.value })
                 }
@@ -502,7 +502,7 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={settings.view_delay_max_seconds ?? 5}
+                value={Number(settings.view_delay_max_seconds) || 5}
                 onChange={(e) =>
                   setSettings({ ...settings, view_delay_max_seconds: e.target.value })
                 }

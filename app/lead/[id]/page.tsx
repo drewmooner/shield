@@ -119,9 +119,12 @@ export default function LeadDetailPage() {
         if (res.ok) {
           const data = await res.json();
           if (data.status === 'connected' && data.isConnected && data.connectionTime) {
-            const backendConnectionTime = typeof data.connectionTime === 'number'
-              ? data.connectionTime
-              : new Date(data.connectionTime).getTime();
+            const raw = data.connectionTime;
+            const backendConnectionTime = typeof raw === 'number'
+              ? raw
+              : typeof raw === 'string' || raw instanceof Date
+                ? new Date(raw).getTime()
+                : Date.now();
             connectionTimestampRef.current = backendConnectionTime;
             console.log('🕐 WhatsApp already connected (from API), using backend timestamp');
             console.log(`   Backend connectionTime: ${new Date(backendConnectionTime).toISOString()}`);
@@ -138,9 +141,12 @@ export default function LeadDetailPage() {
 
     const handleStatusUpdate = (data: Record<string, unknown>) => {
       if (data.status === 'connected' && data.isConnected && data.connectionTime && !connectionTimestampRef.current) {
-        const backendConnectionTime = typeof data.connectionTime === 'number'
-          ? data.connectionTime
-          : new Date(data.connectionTime).getTime();
+        const raw = data.connectionTime;
+        const backendConnectionTime = typeof raw === 'number'
+          ? raw
+          : typeof raw === 'string' || raw instanceof Date
+            ? new Date(raw).getTime()
+            : Date.now();
         connectionTimestampRef.current = backendConnectionTime;
         console.log('🕐 WhatsApp connected (backend timestamp), refreshing messages...');
         console.log(`   Backend connectionTime: ${new Date(backendConnectionTime).toISOString()}`);
@@ -177,8 +183,11 @@ export default function LeadDetailPage() {
       console.log('   Full event data:', JSON.stringify(data, null, 2));
 
       // Filter: only process messages that arrived AFTER connection (with 5 second buffer to account for timing)
-      if (connectionTimestampRef.current && data?.message?.timestamp) {
-        const messageTime = new Date(data.message.timestamp).getTime();
+      const msgTimestamp = data?.message && typeof data.message === 'object' && data.message !== null && 'timestamp' in data.message
+        ? (data.message as { timestamp: string | number | Date }).timestamp
+        : null;
+      if (connectionTimestampRef.current && msgTimestamp != null) {
+        const messageTime = typeof msgTimestamp === 'number' ? msgTimestamp : new Date(msgTimestamp).getTime();
         const bufferWindow = 5000; // 5 seconds buffer to account for timing differences
         const connectionTimeWithBuffer = connectionTimestampRef.current - bufferWindow;
         
@@ -198,12 +207,15 @@ export default function LeadDetailPage() {
       console.log(`✅ Message matches current lead: ${leadId}`);
 
       // Add message to UI
-      if (data?.message) {
+      const msg = data?.message && typeof data.message === 'object' && data.message !== null && 'id' in data.message
+        ? (data.message as Message)
+        : null;
+      if (msg) {
         console.log('📝 Message payload:', {
-          id: data.message.id,
-          sender: data.message.sender,
-          content: data.message.content?.substring(0, 50),
-          timestamp: data.message.timestamp
+          id: msg.id,
+          sender: msg.sender,
+          content: msg.content?.substring(0, 50),
+          timestamp: msg.timestamp
         });
         
         setLead(prev => {
@@ -212,16 +224,16 @@ export default function LeadDetailPage() {
             return prev;
           }
           
-          if (prev.messages.some(m => m.id === data.message.id)) return prev;
+          if (prev.messages.some(m => m.id === msg.id)) return prev;
           
-          const newMessages = [...prev.messages, data.message];
+          const newMessages = [...prev.messages, msg];
           return { ...prev, messages: newMessages };
         });
 
         // Refresh from server to ensure UI stays in sync (handles any state edge cases)
         setTimeout(() => loadLead(), 200);
 
-        if (data.message.sender === 'user') {
+        if (msg.sender === 'user') {
           setNewMessageIndicator(true);
           setTimeout(() => setNewMessageIndicator(false), 3000);
         }
