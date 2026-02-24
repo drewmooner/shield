@@ -4,19 +4,30 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
+import { PostgresDriver } from './db/postgres.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 class Database {
-  constructor(dbPath) {
+  constructor(dbPathOrOptions) {
+    // PostgreSQL: persistent DB and session storage when DATABASE_URL is set
+    if (typeof dbPathOrOptions === 'object' && dbPathOrOptions?.databaseUrl) {
+      this.driver = new PostgresDriver(dbPathOrOptions.databaseUrl);
+      this.db = null;
+      return;
+    }
+
+    const dbPath = typeof dbPathOrOptions === 'string' ? dbPathOrOptions : 'shield.json';
+    this.driver = null;
+
     // Ensure data directory exists
     const dbDir = join(__dirname, '..', 'data');
     if (!existsSync(dbDir)) {
       mkdirSync(dbDir, { recursive: true });
     }
 
-    const fullPath = join(dbDir, dbPath || 'shield.json');
+    const fullPath = join(dbDir, dbPath);
     const adapter = new JSONFile(fullPath);
     this.db = new Low(adapter, {
       leads: [],
@@ -24,8 +35,18 @@ class Database {
       settings: {},
       bot_logs: []
     });
-    
+
     this.init();
+  }
+
+  /** When using PostgreSQL, returns the pool for auth state. Otherwise null. */
+  getPool() {
+    return this.driver?.pool ?? null;
+  }
+
+  /** Clear Baileys session auth (PostgreSQL only; on logout). */
+  async clearSessionAuth(sessionName = 'shield-session') {
+    if (this.driver?.clearSessionAuth) return this.driver.clearSessionAuth(sessionName);
   }
 
   async init() {
@@ -90,6 +111,7 @@ class Database {
   // Lead operations
   /** Normalize JID by stripping device suffix but preserving original domain (@lid / @s.whatsapp.net). */
   normalizeJid(jid) {
+    if (this.driver) return this.driver.normalizeJid(jid);
     if (!jid || typeof jid !== 'string') return null;
     const atIdx = jid.indexOf('@');
     if (atIdx < 0) return null;
@@ -102,6 +124,7 @@ class Database {
 
   /** Build JID from phone, preserving existing domain when provided. */
   getCanonicalJid(phoneNumber, existingJid = null) {
+    if (this.driver) return this.driver.getCanonicalJid(phoneNumber, existingJid);
     if (!phoneNumber) return null;
     const n = this.normalizePhoneNumber(phoneNumber);
     if (!n) return null;
@@ -117,11 +140,13 @@ class Database {
 
   /** Same as normalizeJid: preserve original domain. */
   toCanonicalJid(jid) {
+    if (this.driver) return this.driver.toCanonicalJid(jid);
     return this.normalizeJid(jid);
   }
 
   /** Single canonical form: no +, no spaces, no leading 0 (so 087544536539327 matches 87544536539327). */
   normalizePhoneNumber(phoneNumber) {
+    if (this.driver) return this.driver.normalizePhoneNumber(phoneNumber);
     if (!phoneNumber) return '';
     // Keep digits only (strip @domain, :, spaces, symbols, letters, etc.)
     let normalized = String(phoneNumber).split('@')[0];
@@ -135,6 +160,7 @@ class Database {
   }
 
   async getLeadByPhone(phoneNumber) {
+    if (this.driver) return this.driver.getLeadByPhone(phoneNumber);
     await this.db.read();
     const normalized = this.normalizePhoneNumber(phoneNumber);
     if (!normalized) return null;
@@ -152,6 +178,7 @@ class Database {
   }
 
   async getLeadByJid(jid) {
+    if (this.driver) return this.driver.getLeadByJid(jid);
     await this.db.read();
     const normalizedJid = this.normalizeJid(jid);
     if (!normalizedJid) return null;
@@ -181,6 +208,7 @@ class Database {
 
   /** Find ALL leads that represent the same contact (by normalized phone or JID). Used to merge on incoming. */
   async findAllLeadsForContact(normalizedPhone, normalizedJid) {
+    if (this.driver) return this.driver.findAllLeadsForContact(normalizedPhone, normalizedJid);
     await this.db.read();
     const normalized = this.normalizePhoneNumber(normalizedPhone);
     if (!normalized && !normalizedJid) return [];
@@ -205,6 +233,7 @@ class Database {
 
   /** Merge multiple leads into one (messages, reply_count, contact info). Returns the primary lead. */
   async mergeLeads(leads, preferredPrimaryId = null) {
+    if (this.driver) return this.driver.mergeLeads(leads, preferredPrimaryId);
     if (!leads || leads.length <= 1) return leads?.[0] || null;
     await this.db.read();
 
@@ -233,6 +262,7 @@ class Database {
 
   /** Find or create lead. Never creates a duplicate: always finds by phone or JID first. JID is always ${phone}@s.whatsapp.net. */
   async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null) {
+    if (this.driver) return this.driver.createLead(phoneNumber, contactName, profilePictureUrl, jid);
     await this.db.read();
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber) || phoneNumber;
     const normalizedJid = (jid ? this.normalizeJid(jid) : null) || this.getCanonicalJid(normalizedPhone);
@@ -306,6 +336,7 @@ class Database {
   }
 
   async updateLeadJid(leadId, jid) {
+    if (this.driver) return this.driver.updateLeadJid(leadId, jid);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (!lead) return null;
@@ -319,6 +350,7 @@ class Database {
   }
 
   async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null) {
+    if (this.driver) return this.driver.updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -333,6 +365,7 @@ class Database {
   }
 
   async getOrCreateLead(phoneNumber) {
+    if (this.driver) return this.driver.getOrCreateLead(phoneNumber);
     await this.db.read();
     // Normalize phone number first
     const normalized = this.normalizePhoneNumber(phoneNumber);
@@ -354,6 +387,7 @@ class Database {
   }
 
   async updateLeadStatus(leadId, status) {
+    if (this.driver) return this.driver.updateLeadStatus(leadId, status);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -364,6 +398,7 @@ class Database {
   }
 
   async incrementReplyCount(leadId) {
+    if (this.driver) return this.driver.incrementReplyCount(leadId);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -376,6 +411,7 @@ class Database {
   }
 
   async getAllLeads(status = null) {
+    if (this.driver) return this.driver.getAllLeads(status);
     // Always read fresh from disk to avoid stale data
     await this.db.read();
     let leads = [...this.db.data.leads];
@@ -391,12 +427,14 @@ class Database {
   }
 
   async getLead(leadId) {
+    if (this.driver) return this.driver.getLead(leadId);
     await this.db.read();
     return this.db.data.leads.find(l => l.id === leadId);
   }
 
   // Message operations
   async createMessage(leadId, sender, content, status = 'pending', messageTimestamp = null) {
+    if (this.driver) return this.driver.createMessage(leadId, sender, content, status, messageTimestamp);
     await this.db.read();
     const id = randomUUID();
     const timestamp = messageTimestamp || new Date().toISOString();
@@ -421,6 +459,7 @@ class Database {
   }
 
   async getMessagesByLead(leadId) {
+    if (this.driver) return this.driver.getMessagesByLead(leadId);
     await this.db.read();
     const messages = this.db.data.messages
       .filter(m => m.lead_id === leadId)
@@ -432,6 +471,7 @@ class Database {
   }
 
   async deleteLead(leadId) {
+    if (this.driver) return this.driver.deleteLead(leadId);
     await this.db.read();
     // Remove lead
     this.db.data.leads = this.db.data.leads.filter(l => l.id !== leadId);
@@ -441,6 +481,7 @@ class Database {
   }
 
   async clearAllMessages() {
+    if (this.driver) return this.driver.clearAllMessages();
     try {
       await this.db.read();
       const messageCount = this.db.data.messages ? this.db.data.messages.length : 0;
@@ -463,6 +504,7 @@ class Database {
 
   /** Clear everything: all leads and all messages. UI will be empty until new messages arrive. */
   async clearAll() {
+    if (this.driver) return this.driver.clearAll();
     try {
       await this.db.read();
       const leadCount = this.db.data.leads ? this.db.data.leads.length : 0;
@@ -481,6 +523,7 @@ class Database {
   }
 
   async updateMessageStatus(messageId, status) {
+    if (this.driver) return this.driver.updateMessageStatus(messageId, status);
     await this.db.read();
     const message = this.db.data.messages.find(m => m.id === messageId);
     if (message) {
@@ -491,23 +534,27 @@ class Database {
 
   // Settings operations
   async getSetting(key) {
+    if (this.driver) return this.driver.getSetting(key);
     await this.db.read();
     return this.db.data.settings[key] || null;
   }
 
   async setSetting(key, value) {
+    if (this.driver) return this.driver.setSetting(key, value);
     await this.db.read();
     this.db.data.settings[key] = value;
     await this.db.write();
   }
 
   async getAllSettings() {
+    if (this.driver) return this.driver.getAllSettings();
     await this.db.read();
     return { ...this.db.data.settings };
   }
 
   // Product information operations
   async getProductInfo() {
+    if (this.driver) return this.driver.getProductInfo();
     return await this.getSetting('product_info') || '';
   }
 
@@ -517,6 +564,7 @@ class Database {
 
   // Bot logs
   async addLog(action, details = null) {
+    if (this.driver) return this.driver.addLog(action, details);
     await this.db.read();
     const log = {
       id: this.db.data.bot_logs.length + 1,
@@ -529,13 +577,38 @@ class Database {
   }
 
   async getRecentLogs(limit = 20) {
+    if (this.driver) return this.driver.getRecentLogs(limit);
     await this.db.read();
     return this.db.data.bot_logs
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
       .slice(0, limit);
   }
 
+  /** Prune messages older than N days to save space. No-op for JSON DB if days not set; use for Postgres. */
+  async pruneOldMessages(olderThanDays = 5) {
+    if (this.driver) return this.driver.pruneOldMessages(olderThanDays);
+    try {
+      await this.db.read();
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - olderThanDays);
+      const before = (this.db.data.messages || []).length;
+      this.db.data.messages = (this.db.data.messages || []).filter(
+        (m) => new Date(m.timestamp) >= cutoff
+      );
+      const removed = before - this.db.data.messages.length;
+      if (removed > 0) {
+        await this.db.write();
+        console.log(`🧹 Pruned ${removed} old messages (older than ${olderThanDays} days)`);
+      }
+      return removed;
+    } catch (error) {
+      console.error('❌ Error pruning messages:', error);
+      return 0;
+    }
+  }
+
   close() {
+    if (this.driver) return this.driver.close();
     return Promise.resolve();
   }
 }

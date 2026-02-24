@@ -1,4 +1,5 @@
 import makeWASocket, { DisconnectReason, useMultiFileAuthState, isJidBroadcast, isJidGroup, isJidStatusBroadcast, jidNormalizedUser, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { usePostgresAuthState } from './db/auth-state-postgres.js';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -190,12 +191,19 @@ class WhatsAppHandler {
         console.log('📂 No existing session found - will generate new QR code');
       }
 
-      // Load auth state
+      // Load auth state (PostgreSQL when DATABASE_URL set = persistent session, no re-scan; else file-based)
       console.log('📥 Loading auth state...');
-      // eslint-disable-next-line react-hooks/rules-of-hooks -- Baileys auth helper, not a React hook
-      const { state, saveCreds } = await useMultiFileAuthState(this.fullSessionPath);
+      let state; let saveCreds;
+      const pool = this.database.getPool && this.database.getPool();
+      if (pool) {
+        ({ state, saveCreds } = await usePostgresAuthState(pool, this.sessionName));
+        console.log('✅ Auth state loaded from PostgreSQL (sessions persistent)');
+      } else {
+        // eslint-disable-next-line react-hooks/rules-of-hooks -- Baileys auth helper, not a React hook
+        ({ state, saveCreds } = await useMultiFileAuthState(this.fullSessionPath));
+        console.log('✅ Auth state loaded from file');
+      }
       const hasCreds = !!state.creds && !!state.creds.me;
-      console.log('✅ Auth state loaded');
       console.log('🔐 Has valid credentials:', hasCreds);
 
       if (hasCreds) {
@@ -435,8 +443,15 @@ class WhatsAppHandler {
       // Handle specific disconnect reasons
       if (statusCode === DisconnectReason.loggedOut) {
         console.log('   ⚠️ Logged out - credentials invalid');
-        // Clean up session on logout
-        if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
+        // Clean up session on logout (PostgreSQL: clear auth in DB; else delete session folder)
+        if (this.database.getPool && this.database.getPool()) {
+          try {
+            await this.database.clearSessionAuth(this.sessionName);
+            console.log('   ✅ Session auth cleared from PostgreSQL');
+          } catch (cleanError) {
+            console.error('   ⚠️ Failed to clear session auth:', cleanError.message);
+          }
+        } else if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
           console.log('   🧹 Cleaning up logged out session...');
           try {
             rmSync(this.fullSessionPath, { recursive: true, force: true });
@@ -2053,8 +2068,15 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
   async disconnect() {
     if (!this.sock) {
       console.log('⚠️ No socket to disconnect');
-      // Even if no socket, try to clean up session
-      if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
+      // Even if no socket, try to clean up session (PostgreSQL: clear auth; else delete folder)
+      if (this.database.getPool && this.database.getPool()) {
+        try {
+          await this.database.clearSessionAuth(this.sessionName);
+          console.log('✅ Session auth cleared from PostgreSQL');
+        } catch (cleanError) {
+          console.error('⚠️ Failed to clear session auth:', cleanError.message);
+        }
+      } else if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
         console.log('🧹 Cleaning up session folder...');
         try {
           rmSync(this.fullSessionPath, { recursive: true, force: true });
@@ -2139,15 +2161,21 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       // Wait a moment to ensure everything is processed
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Delete session folder completely - this ensures fresh QR on next connect
-      if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
+      // Delete session completely - PostgreSQL: clear auth in DB; else delete folder (ensures fresh QR on next connect)
+      if (this.database.getPool && this.database.getPool()) {
+        try {
+          await this.database.clearSessionAuth(this.sessionName);
+          console.log('   ✅ Session auth cleared from PostgreSQL');
+        } catch (cleanError) {
+          console.error('   ⚠️ Failed to clear session auth:', cleanError.message);
+        }
+      } else if (this.fullSessionPath && existsSync(this.fullSessionPath)) {
         console.log('   🧹 Deleting session folder...');
         try {
           rmSync(this.fullSessionPath, { recursive: true, force: true });
           console.log('   ✅ Session folder deleted completely');
         } catch (cleanError) {
           console.error('   ⚠️ Failed to delete session folder:', cleanError.message);
-          // Try again after a short delay
           await new Promise(resolve => setTimeout(resolve, 500));
           try {
             rmSync(this.fullSessionPath, { recursive: true, force: true });
@@ -2157,7 +2185,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           }
         }
       }
-      
+
       // Reset connection state
       this.isConnected = false;
       this.isConnecting = false;

@@ -102,9 +102,17 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static(join(__dirname, '../public')));
 
-// Initialize database and WhatsApp handler
-const db = new Database(process.env.DB_PATH || 'shield.json');
+// Initialize database (PostgreSQL when DATABASE_URL set, else JSON file)
+const db = process.env.DATABASE_URL
+  ? new Database({ databaseUrl: process.env.DATABASE_URL })
+  : new Database(process.env.DB_PATH || 'shield.json');
 const whatsapp = new WhatsAppHandler(db);
+
+// Prune old messages on startup to save space (env: PRUNE_MESSAGES_OLDER_THAN_DAYS, default 5)
+const pruneDays = parseInt(process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS || '5', 10);
+if (Number.isFinite(pruneDays) && pruneDays > 0) {
+  db.pruneOldMessages(pruneDays).catch((err) => console.warn('Prune on startup:', err.message));
+}
 
 // Set up WebSocket event emitter for WhatsApp handler
 // Pass io directly for more reliable event emission
