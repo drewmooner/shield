@@ -149,7 +149,9 @@ export default function LeadDetailPage() {
     };
 
     socket.on('status_update', handleStatusUpdate);
-    return () => socket.off('status_update', handleStatusUpdate);
+    return () => {
+      socket.off('status_update', handleStatusUpdate);
+    };
   }, [socket, connected, loadLead]);
 
   // ─── Merge incoming messages without blowing away optimistic ones ─────────
