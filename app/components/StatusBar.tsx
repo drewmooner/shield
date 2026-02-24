@@ -8,7 +8,8 @@ interface LogEntry {
   id?: number | string;
   timestamp: string;
   action: string;
-  details?: unknown;
+  // Structured details payload from backend logs (safe to stringify)
+  details?: Record<string, unknown> | null;
 }
 
 export default function StatusBar() {
