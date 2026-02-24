@@ -37,6 +37,9 @@ class Database {
         max_replies_per_lead: '5',
         min_delay_seconds: '3',
         max_delay_seconds: '10',
+        view_delay_min_seconds: '1',
+        view_delay_max_seconds: '5',
+        typing_indicator_enabled: 'true',
         auto_reply_enabled: 'true',
         primary_link: 'https://example.com',
         backup_link: '',
@@ -46,18 +49,37 @@ class Database {
         ai_model: 'openai/gpt-3.5-turbo',
         keyword_replies: '[]',
         welcome_audio_path: '',
-        send_audio_when_inactive: 'false',
-        inactive_minutes: '5'
+        saved_audios: '[]'
       };
       await this.db.write();
     } else {
-      const defaults = { keyword_replies: '[]', welcome_audio_path: '', send_audio_when_inactive: 'false', inactive_minutes: '5' };
+      const defaults = {
+        keyword_replies: '[]',
+        welcome_audio_path: '',
+        saved_audios: '[]',
+        view_delay_min_seconds: '1',
+        view_delay_max_seconds: '5',
+        typing_indicator_enabled: 'true'
+      };
       let changed = false;
       for (const [k, v] of Object.entries(defaults)) {
         if (this.db.data.settings[k] === undefined) {
           this.db.data.settings[k] = v;
           changed = true;
         }
+      }
+      // Migrate welcome_audio_path to saved_audios if we have one and saved_audios is empty
+      const savedAudiosRaw = this.db.data.settings.saved_audios;
+      let savedAudios = [];
+      try {
+        savedAudios = typeof savedAudiosRaw === 'string' ? JSON.parse(savedAudiosRaw || '[]') : (savedAudiosRaw || []);
+      } catch (_) {}
+      const welcomePath = this.db.data.settings.welcome_audio_path;
+      if (savedAudios.length === 0 && welcomePath && typeof welcomePath === 'string' && welcomePath.trim()) {
+        savedAudios = [{ id: randomUUID(), path: welcomePath }];
+        this.db.data.settings.saved_audios = JSON.stringify(savedAudios);
+        this.db.data.settings.welcome_audio_path = '';
+        changed = true;
       }
       if (changed) await this.db.write();
     }
@@ -66,11 +88,50 @@ class Database {
   }
 
   // Lead operations
-  // Normalize phone number for consistent matching
+  /** Normalize JID by stripping device suffix but preserving original domain (@lid / @s.whatsapp.net). */
+  normalizeJid(jid) {
+    if (!jid || typeof jid !== 'string') return null;
+    const atIdx = jid.indexOf('@');
+    if (atIdx < 0) return null;
+    const phonePart = jid.slice(0, atIdx).split(':')[0];
+    const domain = jid.slice(atIdx + 1);
+    if (!domain) return null;
+    const normalized = this.normalizePhoneNumber(phonePart);
+    return normalized ? `${normalized}@${domain}` : null;
+  }
+
+  /** Build JID from phone, preserving existing domain when provided. */
+  getCanonicalJid(phoneNumber, existingJid = null) {
+    if (!phoneNumber) return null;
+    const n = this.normalizePhoneNumber(phoneNumber);
+    if (!n) return null;
+    if (existingJid) {
+      const normalizedExisting = this.normalizeJid(existingJid);
+      if (normalizedExisting && normalizedExisting.includes('@')) {
+        const domain = normalizedExisting.split('@')[1];
+        if (domain) return `${n}@${domain}`;
+      }
+    }
+    return `${n}@s.whatsapp.net`;
+  }
+
+  /** Same as normalizeJid: preserve original domain. */
+  toCanonicalJid(jid) {
+    return this.normalizeJid(jid);
+  }
+
+  /** Single canonical form: no +, no spaces, no leading 0 (so 087544536539327 matches 87544536539327). */
   normalizePhoneNumber(phoneNumber) {
     if (!phoneNumber) return '';
-    // Remove +, spaces, dashes, parentheses
-    return phoneNumber.replace(/^\+/, '').replace(/[\s\-()]/g, '');
+    // Keep digits only (strip @domain, :, spaces, symbols, letters, etc.)
+    let normalized = String(phoneNumber).split('@')[0];
+    if (normalized.includes(':')) normalized = normalized.split(':')[0];
+    normalized = normalized.replace(/\D/g, '');
+    // Strip leading 0 so "087544536539327" and "87544536539327" match (avoids duplicate when user messages first)
+    if (normalized.length > 10 && normalized.startsWith('0')) normalized = normalized.slice(1);
+    // Phone-like guard: avoid creating leads from junk ids
+    if (normalized.length < 7 || normalized.length > 15) return '';
+    return normalized;
   }
 
   async getLeadByPhone(phoneNumber) {
@@ -83,7 +144,6 @@ class Database {
     lead = this.db.data.leads.find(l => this.normalizePhoneNumber(l.phone_number) === normalized);
     if (lead) return lead;
 
-    // Suffix match: same contact with/without country code (e.g. 23487544536539327 vs 87544536539327)
     lead = this.db.data.leads.find(l => {
       const existingNorm = this.normalizePhoneNumber(l.phone_number);
       return existingNorm && (existingNorm.endsWith(normalized) || normalized.endsWith(existingNorm));
@@ -91,13 +151,148 @@ class Database {
     return lead || null;
   }
 
+  async getLeadByJid(jid) {
+    await this.db.read();
+    const normalizedJid = this.normalizeJid(jid);
+    if (!normalizedJid) return null;
+
+    let lead = this.db.data.leads.find(l => l.jid === normalizedJid);
+    if (lead) return lead;
+    lead = this.db.data.leads.find(l => l.jid && this.normalizeJid(l.jid) === normalizedJid);
+    if (lead) {
+      lead.jid = normalizedJid;
+      await this.db.write();
+      return lead;
+    }
+
+    const phonePart = normalizedJid.slice(0, normalizedJid.indexOf('@'));
+    const normalized = this.normalizePhoneNumber(phonePart);
+    if (normalized) {
+      lead = await this.getLeadByPhone(normalized);
+      if (lead) {
+        if (!lead.jid || this.normalizeJid(lead.jid) !== normalizedJid) {
+          lead.jid = normalizedJid;
+          await this.db.write();
+        }
+      }
+    }
+    return lead || null;
+  }
+
+  /** Find ALL leads that represent the same contact (by normalized phone or JID). Used to merge on incoming. */
+  async findAllLeadsForContact(normalizedPhone, normalizedJid) {
+    await this.db.read();
+    const normalized = this.normalizePhoneNumber(normalizedPhone);
+    if (!normalized && !normalizedJid) return [];
+
+    const ids = new Set();
+    const out = [];
+    for (const l of this.db.data.leads) {
+      if (ids.has(l.id)) continue;
+      const matchJid = normalizedJid && l.jid && this.normalizeJid(l.jid) === normalizedJid;
+      const matchPhone = normalized && (() => {
+        const existingNorm = this.normalizePhoneNumber(l.phone_number);
+        if (!existingNorm) return false;
+        return existingNorm === normalized || existingNorm.endsWith(normalized) || normalized.endsWith(existingNorm);
+      })();
+      if (matchJid || matchPhone) {
+        ids.add(l.id);
+        out.push(l);
+      }
+    }
+    return out;
+  }
+
+  /** Merge multiple leads into one (messages, reply_count, contact info). Returns the primary lead. */
+  async mergeLeads(leads, preferredPrimaryId = null) {
+    if (!leads || leads.length <= 1) return leads?.[0] || null;
+    await this.db.read();
+
+    // Primary: preferred id, or first with contact_name, or oldest created_at
+    let primary = preferredPrimaryId ? leads.find(l => l.id === preferredPrimaryId) : null;
+    if (!primary) primary = leads.find(l => l.contact_name || l.profile_picture_url) || leads[0];
+    if (!primary) primary = leads[0];
+    const primaryId = primary.id;
+    const others = leads.filter(l => l.id !== primaryId);
+
+    for (const other of others) {
+      const msgs = this.db.data.messages.filter(m => m.lead_id === other.id);
+      for (const m of msgs) m.lead_id = primaryId;
+      primary.reply_count = (primary.reply_count || 0) + (other.reply_count || 0);
+      if (!primary.contact_name && other.contact_name) primary.contact_name = other.contact_name;
+      if (!primary.profile_picture_url && other.profile_picture_url) primary.profile_picture_url = other.profile_picture_url;
+      if (other.created_at && new Date(other.created_at) < new Date(primary.created_at)) primary.created_at = other.created_at;
+    }
+
+    this.db.data.leads = this.db.data.leads.filter(l => l.id !== primaryId && !others.some(o => o.id === l.id));
+    this.db.data.leads.push(primary);
+    primary.updated_at = new Date().toISOString();
+    await this.db.write();
+    return primary;
+  }
+
+  /** Find or create lead. Never creates a duplicate: always finds by phone or JID first. JID is always ${phone}@s.whatsapp.net. */
   async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null) {
     await this.db.read();
+    const normalizedPhone = this.normalizePhoneNumber(phoneNumber) || phoneNumber;
+    const normalizedJid = (jid ? this.normalizeJid(jid) : null) || this.getCanonicalJid(normalizedPhone);
+
+    let lead = await this.getLeadByPhone(normalizedPhone);
+    if (lead) {
+      let changed = false;
+      if (normalizedJid && (!lead.jid || lead.jid !== normalizedJid)) {
+        lead.jid = normalizedJid;
+        changed = true;
+      }
+      if (contactName != null && lead.contact_name !== contactName) {
+        lead.contact_name = contactName;
+        changed = true;
+      }
+      if (profilePictureUrl != null && lead.profile_picture_url !== profilePictureUrl) {
+        lead.profile_picture_url = profilePictureUrl;
+        changed = true;
+      }
+      if (changed) {
+        lead.updated_at = new Date().toISOString();
+        await this.db.write();
+      }
+      return lead;
+    }
+
+    lead = await this.getLeadByJid(normalizedJid);
+    if (lead) {
+      let changed = false;
+      if (lead.phone_number !== normalizedPhone) {
+        lead.phone_number = normalizedPhone;
+        changed = true;
+      }
+      if (contactName != null && lead.contact_name !== contactName) {
+        lead.contact_name = contactName;
+        changed = true;
+      }
+      if (profilePictureUrl != null && lead.profile_picture_url !== profilePictureUrl) {
+        lead.profile_picture_url = profilePictureUrl;
+        changed = true;
+      }
+      if (changed) {
+        lead.updated_at = new Date().toISOString();
+        await this.db.write();
+      }
+      return lead;
+    }
+
+    // Avoid race duplicate: re-check right before push (another call may have just created)
+    await this.db.read();
+    lead = await this.getLeadByPhone(normalizedPhone);
+    if (lead) return lead;
+    lead = await this.getLeadByJid(normalizedJid);
+    if (lead) return lead;
+
     const id = randomUUID();
-    const lead = {
+    const newLead = {
       id,
-      phone_number: phoneNumber,
-      jid: jid || null, // Store full JID including @lid for accurate contact matching
+      phone_number: normalizedPhone,
+      jid: normalizedJid || this.getCanonicalJid(normalizedPhone),
       contact_name: contactName || null,
       profile_picture_url: profilePictureUrl || null,
       reply_count: 0,
@@ -105,8 +300,21 @@ class Database {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
-    this.db.data.leads.push(lead);
+    this.db.data.leads.push(newLead);
     await this.db.write();
+    return newLead;
+  }
+
+  async updateLeadJid(leadId, jid) {
+    await this.db.read();
+    const lead = this.db.data.leads.find(l => l.id === leadId);
+    if (!lead) return null;
+    const normalizedJid = this.toCanonicalJid(jid);
+    if (normalizedJid && lead.jid !== normalizedJid) {
+      lead.jid = normalizedJid;
+      lead.updated_at = new Date().toISOString();
+      await this.db.write();
+    }
     return lead;
   }
 
@@ -116,43 +324,12 @@ class Database {
     if (lead) {
       if (contactName) lead.contact_name = contactName;
       if (profilePictureUrl) lead.profile_picture_url = profilePictureUrl;
-      if (jid) lead.jid = jid; // Update JID if provided
+      const canonical = this.toCanonicalJid(jid);
+      if (canonical) lead.jid = canonical;
       lead.updated_at = new Date().toISOString();
       await this.db.write();
     }
     return lead;
-  }
-
-  // Canonical JID format - use same format for incoming and outgoing to avoid duplicate leads
-  getCanonicalJid(phoneNumber) {
-    const n = this.normalizePhoneNumber(phoneNumber);
-    return n ? `${n}@s.whatsapp.net` : null;
-  }
-
-  async getLeadByJid(jid) {
-    await this.db.read();
-    const canonical = this.getCanonicalJid(jid.replace('@s.whatsapp.net', '').replace(/@lid.*/, ''));
-    // Try exact match (canonical or stored JID)
-    let lead = canonical ? this.db.data.leads.find(l => l.jid === canonical) : null;
-    if (lead) return lead;
-    lead = this.db.data.leads.find(l => l.jid === jid);
-    if (lead) return lead;
-
-    // Fallback to phone number match (getLeadByPhone includes suffix match for country code variants)
-    const phoneFromJid = jid.replace('@s.whatsapp.net', '').replace(/@lid.*/, '');
-    const normalized = this.normalizePhoneNumber(phoneFromJid);
-    if (normalized) {
-      lead = await this.getLeadByPhone(normalized);
-      // Store canonical JID so incoming and outgoing use same lead
-      if (lead) {
-        const leadCanonical = this.getCanonicalJid(lead.phone_number);
-        if (leadCanonical && lead.jid !== leadCanonical) {
-          lead.jid = leadCanonical;
-          await this.db.write();
-        }
-      }
-    }
-    return lead || null;
   }
 
   async getOrCreateLead(phoneNumber) {

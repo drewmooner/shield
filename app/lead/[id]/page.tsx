@@ -237,27 +237,20 @@ export default function LeadDetailPage() {
       mergeMessages(fresh.messages);
     };
 
+    const handleDataCleared = () => {
+      router.push('/');
+    };
+
     socket.on('new_message', handleNewMessage);
     socket.on('lead_updated', handleLeadUpdated);
-    
-    // ✅ DEBUG: Listen for ALL socket events to see what's coming through
-    const debugHandler = (eventName: string, ...args: unknown[]) => {
-      if (eventName === 'new_message') {
-        console.log('🔍 DEBUG: Raw new_message event:', args);
-      }
-    };
-    socket.onAny(debugHandler);
-    
-    console.log('📡 WebSocket listeners attached for lead:', leadId);
-    console.log('   Socket connected:', socket.connected);
-    console.log('   Socket ID:', socket.id);
+    socket.on('data_cleared', handleDataCleared);
 
     return () => {
       socket.off('new_message', handleNewMessage);
       socket.off('lead_updated', handleLeadUpdated);
-      socket.offAny(debugHandler);
+      socket.off('data_cleared', handleDataCleared);
     };
-  }, [socket, connected, leadId, mergeMessages, loadLead]);
+  }, [socket, connected, leadId, mergeMessages, loadLead, router]);
 
   // ─── Auto-scroll when messages change ────────────────────────────────────
   useEffect(() => {
@@ -298,7 +291,7 @@ export default function LeadDetailPage() {
     scrollToBottom();
 
     try {
-      await sendMessage(lead.phone_number, messageContent);
+      await sendMessage(lead.phone_number, messageContent, lead.id);
       setLead(prev => {
         if (!prev) return prev;
         return {

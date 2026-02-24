@@ -127,11 +127,11 @@ export async function clearAllMessages() {
   return safeJsonResponse(res);
 }
 
-export async function sendMessage(phoneNumber: string, message: string) {
+export async function sendMessage(phoneNumber: string, message: string, leadId?: string) {
   const res = await fetch(`${API_URL}/messages/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phoneNumber, message }),
+    body: JSON.stringify({ phoneNumber, message, leadId }),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -140,8 +140,10 @@ export async function sendMessage(phoneNumber: string, message: string) {
   return safeJsonResponse(res);
 }
 
-export async function getSettings() {
-  const res = await fetch(`${API_URL}/settings`);
+export async function getSettings(noCache = false) {
+  const res = await fetch(`${API_URL}/settings${noCache ? `?t=${Date.now()}` : ''}`, {
+    ...(noCache ? { cache: 'no-store' as RequestCache } : {}),
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to get settings: ${res.status} ${text.substring(0, 100)}`);
@@ -214,13 +216,11 @@ export async function refreshContactNames() {
   return safeJsonResponse(res);
 }
 
-export function getAudioFileUrl(): string {
-  if (typeof window !== 'undefined') {
-    const base = process.env.NEXT_PUBLIC_API_URL || window.location.origin;
-    const api = base.replace(/\/api\/?$/, '') || window.location.origin;
-    return `${api}/api/settings/audio/file`;
-  }
-  return '/api/settings/audio/file';
+export function getAudioFileUrl(id: string): string {
+  const base = typeof window !== 'undefined' ? (process.env.NEXT_PUBLIC_API_URL || window.location.origin) : '';
+  const api = base ? base.replace(/\/api\/?$/, '') || base : '';
+  const path = api ? `${api}/api/settings/audio/file?id=${encodeURIComponent(id)}` : `/api/settings/audio/file?id=${encodeURIComponent(id)}`;
+  return path;
 }
 
 export async function uploadAudio(file: File) {
@@ -230,6 +230,15 @@ export async function uploadAudio(file: File) {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Upload failed: ${text.substring(0, 100)}`);
+  }
+  return safeJsonResponse(res);
+}
+
+export async function deleteAudio(id: string) {
+  const res = await fetch(`${API_URL}/settings/audio/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Delete failed: ${text.substring(0, 100)}`);
   }
   return safeJsonResponse(res);
 }

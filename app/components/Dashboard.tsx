@@ -59,19 +59,24 @@ export default function Dashboard() {
       loadLeads();
     };
 
+    const handleDataCleared = () => {
+      setLeads([]);
+      setLastMessageIds({});
+      loadLeads();
+    };
+
     const handleNewMessage = (data: Record<string, unknown>) => {
       console.log('📨 Dashboard: New message received for lead:', data?.leadId);
       loadLeads();
     };
 
     socket.on('leads_changed', handleLeadsChanged);
+    socket.on('data_cleared', handleDataCleared);
     socket.on('new_message', handleNewMessage);
-    
-    // Log WebSocket connection status
-    console.log('📡 Dashboard WebSocket listeners attached');
 
     return () => {
       socket.off('leads_changed', handleLeadsChanged);
+      socket.off('data_cleared', handleDataCleared);
       socket.off('new_message', handleNewMessage);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

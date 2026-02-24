@@ -1,14 +1,20 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getSettings, updateSettings, exportChatLogs, refreshContactNames, uploadAudio, getAudioFileUrl } from '../lib/api';
+import { getSettings, updateSettings, exportChatLogs, refreshContactNames, uploadAudio, getAudioFileUrl, deleteAudio } from '../lib/api';
 import { useSocketContext } from '../providers/SocketProvider';
+
+interface SavedAudio {
+  id: string;
+  path: string;
+}
 
 interface KeywordReply {
   id: string;
   keyword: string;
   message: string;
   replyType: 'text' | 'audio';
+  audioId?: string;
 }
 
 function parseKeywordReplies(v: unknown): KeywordReply[] {
@@ -17,6 +23,7 @@ function parseKeywordReplies(v: unknown): KeywordReply[] {
     keyword: (e.keyword as string) || '',
     message: (e.message as string) || '',
     replyType: (e.replyType === 'audio' ? 'audio' : 'text') as 'text' | 'audio',
+    audioId: (e.audioId as string) || undefined,
   });
   if (Array.isArray(v)) {
     return v.map((e: Record<string, unknown>) => mapEntry(e));
@@ -34,13 +41,15 @@ function parseKeywordReplies(v: unknown): KeywordReply[] {
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, unknown>>({});
-  const [productInfo, setProductInfo] = useState<string>('');
   const [keywordReplies, setKeywordReplies] = useState<KeywordReply[]>([]);
+  const [savedAudios, setSavedAudios] = useState<SavedAudio[]>([]);
   const [audioSaving, setAudioSaving] = useState(false);
   const [recording, setRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioListRef = useRef<HTMLUListElement>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [keywordSaveStatus, setKeywordSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const { socket, connected } = useSocketContext();
 
   useEffect(() => {
@@ -53,8 +62,8 @@ export default function SettingsPage() {
 
     const handleSettingsUpdate = (data: Record<string, unknown>) => {
       setSettings(data);
-      setProductInfo((data.product_info as string) || '');
       setKeywordReplies(parseKeywordReplies(data.keyword_replies));
+      setSavedAudios(parseSavedAudios(data.saved_audios));
     };
 
     socket.on('settings_updated', handleSettingsUpdate);
@@ -64,12 +73,25 @@ export default function SettingsPage() {
     };
   }, [socket, connected]);
 
+  function parseSavedAudios(v: unknown): SavedAudio[] {
+    if (Array.isArray(v)) return v as SavedAudio[];
+    if (typeof v === 'string') {
+      try {
+        const arr = JSON.parse(v);
+        return Array.isArray(arr) ? (arr as SavedAudio[]) : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
+
   const loadSettings = async () => {
     try {
       const data = await getSettings();
       setSettings(data);
-      setProductInfo((data.product_info as string) || '');
       setKeywordReplies(parseKeywordReplies(data.keyword_replies));
+      setSavedAudios(parseSavedAudios(data.saved_audios));
     } catch (err) {
       console.error(err);
     } finally {
@@ -84,7 +106,6 @@ export default function SettingsPage() {
       const { openrouter_api_key, ai_model, ...settingsToSave } = settings;
       await updateSettings({
         ...settingsToSave,
-        product_info: productInfo,
         keyword_replies: keywordReplies,
       });
       console.log('✅ Settings saved');
@@ -100,12 +121,42 @@ export default function SettingsPage() {
     setKeywordReplies([...keywordReplies, { id: crypto.randomUUID(), keyword: '', message: '', replyType: 'text' as const }]);
   };
 
-  const updateKeywordReply = (id: string, field: 'keyword' | 'message' | 'replyType', value: string) => {
+  const updateKeywordReply = (id: string, field: 'keyword' | 'message' | 'replyType' | 'audioId', value: string) => {
     setKeywordReplies(keywordReplies.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   };
 
   const removeKeywordReply = (id: string) => {
     setKeywordReplies(keywordReplies.filter((r) => r.id !== id));
+  };
+
+  const saveKeywords = async () => {
+    setKeywordSaveStatus('saving');
+    try {
+      const { openrouter_api_key, ai_model, ...settingsToSave } = settings;
+      await updateSettings({
+        ...settingsToSave,
+        keyword_replies: keywordReplies,
+      });
+      setKeywordSaveStatus('saved');
+      setTimeout(() => setKeywordSaveStatus('idle'), 2000);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save keywords');
+      setKeywordSaveStatus('idle');
+    }
+  };
+
+  const refreshAudioList = async () => {
+    setAudioSaving(true);
+    try {
+      const data = await getSettings(true);
+      setSavedAudios(parseSavedAudios(data.saved_audios));
+      setSettings(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAudioSaving(false);
+    }
   };
 
   const startRecording = async () => {
@@ -120,9 +171,17 @@ export default function SettingsPage() {
         const file = new File([blob], 'recording.ogg', { type: 'audio/ogg' });
         setAudioSaving(true);
         try {
-          const res = await uploadAudio(file);
-          setSettings((prev) => ({ ...prev, welcome_audio_path: (res as { path?: string }).path || 'audio/welcome.ogg' }));
-          alert('Audio saved. It will be sent when you\'re inactive.');
+          const res = await uploadAudio(file) as { success?: boolean; id?: string; path?: string };
+          const id = res?.id ?? (res as Record<string, string>)?.['id'];
+          const path = res?.path ?? (res as Record<string, string>)?.['path'];
+          if (id) {
+            setSavedAudios((prev) => [...prev, { id, path: path || `audio/${id}.ogg` }]);
+          }
+          const data = await getSettings(true);
+          setSettings(data);
+          setSavedAudios(parseSavedAudios(data.saved_audios));
+          setTimeout(() => audioListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+          alert('Audio saved. Use it in Keyword & Replies by choosing "Reply with: Audio".');
         } catch (err) {
           console.error(err);
           alert('Failed to save recording');
@@ -153,10 +212,18 @@ export default function SettingsPage() {
       alert('Please select an audio file');
       return;
     }
-    setAudioSaving(true);
+      setAudioSaving(true);
     try {
-      const res = await uploadAudio(file);
-      setSettings((prev) => ({ ...prev, welcome_audio_path: (res as { path?: string }).path || 'audio/welcome.ogg' }));
+      const res = await uploadAudio(file) as { success?: boolean; id?: string; path?: string };
+      const id = res?.id ?? (res as Record<string, string>)?.['id'];
+      const path = res?.path ?? (res as Record<string, string>)?.['path'];
+      if (id) {
+        setSavedAudios((prev) => [...prev, { id, path: path || `audio/${id}.ogg` }]);
+      }
+      const data = await getSettings(true);
+      setSettings(data);
+      setSavedAudios(parseSavedAudios(data.saved_audios));
+      setTimeout(() => audioListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
       alert('Audio saved.');
     } catch (err) {
       console.error(err);
@@ -164,6 +231,20 @@ export default function SettingsPage() {
     } finally {
       setAudioSaving(false);
       e.target.value = '';
+    }
+  };
+
+  const handleDeleteAudio = async (audioId: string) => {
+    if (!confirm('Delete this audio?')) return;
+    setAudioSaving(true);
+    try {
+      await deleteAudio(audioId);
+      setSavedAudios((prev) => prev.filter((a) => a.id !== audioId));
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete audio');
+    } finally {
+      setAudioSaving(false);
     }
   };
 
@@ -184,7 +265,6 @@ export default function SettingsPage() {
       const { openrouter_api_key, ai_model, ...settingsToSave } = newSettings;
       await updateSettings({
         ...settingsToSave,
-        product_info: productInfo,
         keyword_replies: keywordReplies,
       });
       console.log(`✅ Auto-reply ${enabled ? 'enabled' : 'disabled'} - takes effect immediately`);
@@ -210,105 +290,25 @@ export default function SettingsPage() {
     <div className="p-4 sm:p-6 max-w-4xl">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <h1 className="text-xl sm:text-2xl font-bold text-black dark:text-zinc-50">Settings</h1>
-        <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={async () => {
-              try {
-                await exportChatLogs('json');
-              } catch (err) {
-                console.error(err);
-                alert('Failed to export logs');
-              }
-            }}
-            className="px-4 py-2 rounded-lg text-sm bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-          >
-            Export JSON
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                await exportChatLogs('csv');
-              } catch (err) {
-                console.error(err);
-                alert('Failed to export logs');
-              }
-            }}
-            className="px-4 py-2 rounded-lg text-sm bg-green-600 text-white hover:bg-green-700 transition-colors"
-          >
-            Export CSV
-          </button>
-          <button
-            onClick={async () => {
-              if (!confirm('This will refresh all contact names directly from WhatsApp. This may take a few moments. Continue?')) {
-                return;
-              }
-              try {
-                const result = await refreshContactNames();
-                alert(`Contact names refreshed!\nUpdated: ${result.updated || 0}\nErrors: ${result.errors || 0}\nTotal: ${result.total || 0}`);
-                // Reload page to show updated names
-                window.location.reload();
-              } catch (err: unknown) {
-                console.error(err);
-                const msg = err instanceof Error ? err.message : String(err);
-                alert(`Failed to refresh contact names: ${msg}`);
-              }
-            }}
-            className="px-4 py-2 rounded-lg text-sm bg-purple-600 text-white hover:bg-purple-700 transition-colors"
-          >
-            Refresh Contact Names
-          </button>
-        </div>
       </div>
 
       <div className="space-y-6">
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">Links</h2>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                Primary Link
-              </label>
-              <input
-                type="text"
-                value={settings.primary_link || ''}
-                onChange={(e) => setSettings({ ...settings, primary_link: e.target.value })}
-                className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-                placeholder="https://example.com"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                Backup Link
-              </label>
-              <input
-                type="text"
-                value={settings.backup_link || ''}
-                onChange={(e) => setSettings({ ...settings, backup_link: e.target.value })}
-                className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
-                placeholder="https://backup.com"
-              />
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-lg font-semibold text-black dark:text-zinc-50">Keyword & Replies</h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={saveKeywords}
+                disabled={keywordSaveStatus === 'saving' || saving}
+                className="px-3 py-1.5 rounded-lg text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {keywordSaveStatus === 'saving' ? 'Saving…' : keywordSaveStatus === 'saved' ? 'Saved' : 'Save changes'}
+              </button>
             </div>
           </div>
-        </div>
-
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4 text-black dark:text-zinc-50">Product Information</h2>
           <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
-            Enter information about your product or service here. The AI will use this information to answer customer questions when AI is enabled.
-          </p>
-          <textarea
-            value={productInfo}
-            onChange={(e) => setProductInfo(e.target.value)}
-            rows={8}
-            className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 resize-y"
-            placeholder="Enter product/service information, features, pricing, etc. This will be used by AI to answer customer questions."
-          />
-        </div>
-
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">Keyword & Replies</h2>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
-            When auto-reply is on, the bot checks keywords first (exact match, case-insensitive). Reply can be text or the pre-recorded audio. Use one entry as welcome—e.g. keyword &quot;hi&quot; or &quot;start&quot;. Toggle auto-reply off to stop all keyword and AI replies.
+            When auto-reply is on, the bot checks keywords first (exact match, case-insensitive). Reply can be text or the pre-recorded audio. Edit rows below and click <strong>Save changes</strong> to keep updates (including removals).
           </p>
           <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
             <table className="w-full text-sm">
@@ -344,7 +344,16 @@ export default function SettingsPage() {
                     </td>
                     <td className="py-2 px-4">
                       {row.replyType === 'audio' ? (
-                        <span className="text-zinc-500 dark:text-zinc-400 text-sm">Pre-recorded audio (saved below)</span>
+                        <select
+                          value={row.audioId || ''}
+                          onChange={(e) => updateKeywordReply(row.id, 'audioId', e.target.value)}
+                          className="w-full px-3 py-1.5 border border-zinc-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 text-sm"
+                        >
+                          <option value="">Select audio…</option>
+                          {savedAudios.map((a) => (
+                            <option key={a.id} value={a.id}>Audio {a.id.slice(0, 8)}</option>
+                          ))}
+                        </select>
                       ) : (
                         <textarea
                           value={row.message}
@@ -369,19 +378,22 @@ export default function SettingsPage() {
               </tbody>
             </table>
           </div>
-          <button
-            type="button"
-            onClick={addKeywordReply}
-            className="mt-3 px-4 py-2 rounded-lg text-sm bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors"
-          >
-            + Add keyword reply
-          </button>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={addKeywordReply}
+              className="px-4 py-2 rounded-lg text-sm bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors"
+            >
+              + Add keyword reply
+            </button>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Click &quot;Save changes&quot; above after adding or removing rows.</span>
+          </div>
         </div>
 
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">Pre-recorded audio</h2>
+          <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">Pre-recorded audios</h2>
           <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
-            Record or upload an audio message. When &quot;Send when inactive&quot; is on, the bot will send this audio if you haven&apos;t replied within the set minutes.
+            Record or upload audios. Each is sent only when a keyword is triggered—choose &quot;Reply with: Audio&quot; and pick an audio above.
           </p>
           <div className="flex flex-wrap items-center gap-3 mb-4">
             {!recording ? (
@@ -406,33 +418,35 @@ export default function SettingsPage() {
               Upload file
               <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" disabled={audioSaving} />
             </label>
+            <button
+              type="button"
+              onClick={refreshAudioList}
+              disabled={audioSaving}
+              className="px-4 py-2 rounded-lg text-sm bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50"
+            >
+              Refresh list
+            </button>
           </div>
-          {(settings.welcome_audio_path as string) && (
-            <audio controls src={`${getAudioFileUrl()}?t=${Date.now()}`} className="w-full max-w-md mb-4" />
+          <ul ref={audioListRef} className="space-y-2">
+            {savedAudios.map((a) => (
+              <li key={a.id} className="flex items-center gap-2 py-1.5 px-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
+                <audio controls src={`${getAudioFileUrl(a.id)}&t=${Date.now()}`} className="flex-1 max-w-sm h-8" />
+                <button
+                  type="button"
+                  onClick={() => handleDeleteAudio(a.id)}
+                  disabled={audioSaving}
+                  className="p-1.5 rounded text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50"
+                  title="Delete this audio"
+                  aria-label="Delete this audio"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {savedAudios.length === 0 && (
+            <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-2">No audios yet. Record or upload one above.</p>
           )}
-          <div className="space-y-3">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.send_audio_when_inactive === 'true'}
-                onChange={(e) => setSettings({ ...settings, send_audio_when_inactive: e.target.checked ? 'true' : 'false' })}
-                className="rounded border-zinc-300 dark:border-zinc-600"
-              />
-              <span className="text-sm text-zinc-700 dark:text-zinc-300">Send when inactive</span>
-            </label>
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-zinc-700 dark:text-zinc-300">After</label>
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={settings.inactive_minutes ?? 5}
-                onChange={(e) => setSettings({ ...settings, inactive_minutes: e.target.value })}
-                className="w-16 px-2 py-1 border border-zinc-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 text-sm"
-              />
-              <span className="text-sm text-zinc-600 dark:text-zinc-400">minutes without reply</span>
-            </div>
-          </div>
         </div>
 
         <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6">
@@ -440,11 +454,12 @@ export default function SettingsPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                Min Delay (seconds)
+                Reply delay — Min (seconds)
               </label>
               <input
                 type="number"
-                value={settings.min_delay_seconds || 3}
+                min={0}
+                value={settings.min_delay_seconds ?? 3}
                 onChange={(e) =>
                   setSettings({ ...settings, min_delay_seconds: e.target.value })
                 }
@@ -453,16 +468,47 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
-                Max Delay (seconds)
+                Reply delay — Max (seconds)
               </label>
               <input
                 type="number"
-                value={settings.max_delay_seconds || 10}
+                min={0}
+                value={settings.max_delay_seconds ?? 10}
                 onChange={(e) =>
                   setSettings({ ...settings, max_delay_seconds: e.target.value })
                 }
                 className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
+                View delay — Min (seconds)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={settings.view_delay_min_seconds ?? 1}
+                onChange={(e) =>
+                  setSettings({ ...settings, view_delay_min_seconds: e.target.value })
+                }
+                className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
+              />
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Before marking message as read</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-2 text-zinc-700 dark:text-zinc-300">
+                View delay — Max (seconds)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={settings.view_delay_max_seconds ?? 5}
+                onChange={(e) =>
+                  setSettings({ ...settings, view_delay_max_seconds: e.target.value })
+                }
+                className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
+              />
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Before marking message as read</p>
             </div>
           </div>
         </div>
@@ -476,7 +522,7 @@ export default function SettingsPage() {
                   Enable Auto-Reply
                 </label>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  When enabled, Shield will automatically respond to incoming messages. If OpenRouter API key is configured, AI will be used for intelligent responses. Otherwise, a simple acknowledgment message will be sent.
+                  When enabled, Shield will automatically respond to incoming messages using your current auto-reply setup.
                 </p>
                 {saving && (
                   <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">

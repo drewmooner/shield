@@ -6,9 +6,10 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import Database from './database.js';
 import WhatsAppHandler from './whatsapp.js';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync, mkdirSync, createReadStream } from 'fs';
+import { existsSync, mkdirSync, createReadStream, unlinkSync } from 'fs';
 
 dotenv.config();
 
@@ -21,7 +22,12 @@ if (!existsSync(audioDir)) mkdirSync(audioDir, { recursive: true });
 
 const audioStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, audioDir),
-  filename: (_req, file, cb) => cb(null, `welcome.${file.originalname.split('.').pop() || 'ogg'}`)
+  filename: (req, file, cb) => {
+    const id = req.audioId || randomUUID();
+    req.audioId = id;
+    const ext = file.originalname.split('.').pop()?.toLowerCase() || 'ogg';
+    cb(null, `${id}.${ext}`);
+  }
 });
 const uploadAudio = multer({ storage: audioStorage, limits: { fileSize: 16 * 1024 * 1024 } });
 
@@ -538,13 +544,13 @@ app.post('/api/messages/clear', async (req, res) => {
 // Send manual message
 app.post('/api/messages/send', async (req, res) => {
   try {
-    const { phoneNumber, message } = req.body;
+    const { phoneNumber, message, leadId } = req.body;
     if (!phoneNumber || !message) {
       return res.status(400).json({ error: 'phoneNumber and message are required' });
     }
 
     // Pass io directly to sendManualMessage so it can emit events reliably
-    const result = await whatsapp.sendManualMessage(phoneNumber, message, io);
+    const result = await whatsapp.sendManualMessage(phoneNumber, message, io, leadId || null);
     res.json(result);
   } catch (error) {
     console.error('❌ /api/messages/send error:', error);
@@ -566,6 +572,15 @@ app.get('/api/settings', async (req, res) => {
         safeSettings.keyword_replies = [];
       }
     }
+    if (typeof safeSettings.saved_audios === 'string') {
+      try {
+        safeSettings.saved_audios = JSON.parse(safeSettings.saved_audios);
+      } catch {
+        safeSettings.saved_audios = [];
+      }
+    } else if (!Array.isArray(safeSettings.saved_audios)) {
+      safeSettings.saved_audios = [];
+    }
     res.json({ ...safeSettings, product_info: productInfo });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -582,7 +597,8 @@ app.post('/api/settings', async (req, res) => {
     }
 
     if (keyword_replies !== undefined) {
-      await db.setSetting('keyword_replies', typeof keyword_replies === 'string' ? keyword_replies : JSON.stringify(keyword_replies));
+      const value = Array.isArray(keyword_replies) ? JSON.stringify(keyword_replies) : (typeof keyword_replies === 'string' ? keyword_replies : JSON.stringify([]));
+      await db.setSetting('keyword_replies', value);
     }
 
     for (const [key, value] of Object.entries(otherSettings)) {
@@ -607,30 +623,93 @@ app.post('/api/settings', async (req, res) => {
   }
 });
 
-// Upload pre-recorded audio (multipart)
+// Normalize path to forward slashes so it works on all platforms
+function normalizeAudioPath(p) {
+  return typeof p === 'string' ? p.replace(/\\/g, '/') : p;
+}
+
+// Upload pre-recorded audio (multipart) — adds to saved_audios list
 app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No audio file' });
-    const relativePath = join('audio', req.file.filename);
-    await db.setSetting('welcome_audio_path', relativePath);
-    const fullPath = join(dataDir, relativePath);
-    res.json({ success: true, path: relativePath, url: `/api/settings/audio/file` });
+    const id = req.audioId || req.file.filename.split('.')[0];
+    const relativePath = normalizeAudioPath(join('audio', req.file.filename));
+    const raw = await db.getSetting('saved_audios');
+    let list = [];
+    try {
+      list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    } catch {
+      list = [];
+    }
+    list.push({ id, path: relativePath });
+    await db.setSetting('saved_audios', JSON.stringify(list));
+    const updatedSettings = await db.getAllSettings();
+    const savedAudios = typeof updatedSettings.saved_audios === 'string' ? JSON.parse(updatedSettings.saved_audios || '[]') : (updatedSettings.saved_audios || []);
+    io.emit('settings_updated', { ...updatedSettings, saved_audios: savedAudios });
+    res.json({ success: true, id, path: relativePath });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Serve saved audio for playback
+// Serve saved audio for playback by id (query ?id=) or legacy single file (no id)
 app.get('/api/settings/audio/file', async (req, res) => {
   try {
-    const relativePath = await db.getSetting('welcome_audio_path');
-    if (!relativePath) return res.status(404).json({ error: 'No audio' });
-    const fullPath = join(dataDir, relativePath);
-    if (!existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
+    let id = req.query.id || req.params?.id;
+    if (Array.isArray(id)) id = id[0];
+    id = id ? String(id).trim() : null;
+
+    let fullPath = null;
+    let list = [];
+
+    if (id) {
+      const raw = await db.getSetting('saved_audios');
+      try {
+        list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+      } catch {
+        return res.status(404).json({ error: 'No audio' });
+      }
+      const entry = list.find(a => a.id === id);
+      if (!entry) return res.status(404).json({ error: 'No audio' });
+      fullPath = join(dataDir, normalizeAudioPath(entry.path));
+    } else {
+      const legacyPath = await db.getSetting('welcome_audio_path');
+      if (legacyPath) fullPath = join(dataDir, normalizeAudioPath(legacyPath));
+    }
+
+    if (!fullPath || !existsSync(fullPath)) return res.status(404).json({ error: 'File not found' });
     const ext = fullPath.split('.').pop()?.toLowerCase() || 'ogg';
     const mime = ext === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
     res.setHeader('Content-Type', mime);
     createReadStream(fullPath).pipe(res);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete one pre-recorded audio by id
+app.delete('/api/settings/audio/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const raw = await db.getSetting('saved_audios');
+    let list = [];
+    try {
+      list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    } catch {
+      return res.json({ success: true });
+    }
+    const entry = list.find(a => a.id === id);
+    list = list.filter(a => a.id !== id);
+    await db.setSetting('saved_audios', JSON.stringify(list));
+    if (entry) {
+      const fullPath = join(dataDir, normalizeAudioPath(entry.path));
+      if (existsSync(fullPath)) unlinkSync(fullPath);
+    }
+    const updatedSettings = await db.getAllSettings();
+    const savedAudios = typeof updatedSettings.saved_audios === 'string' ? JSON.parse(updatedSettings.saved_audios || '[]') : (updatedSettings.saved_audios || []);
+    io.emit('settings_updated', { ...updatedSettings, saved_audios: savedAudios });
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
