@@ -142,9 +142,10 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   }
 
   // Show QR screen for qr_ready (and when reconnecting but we still have a QR – seamless refresh)
-  const showQr = (status.status === 'qr_ready' || (status.status === 'reconnecting' && status.qr)) && status.qr;
+  const qrValue = status.qr;
+  const showQr = (status.status === 'qr_ready' || (status.status === 'reconnecting' && qrValue)) && qrValue;
   const isRefreshingQr = status.reason === 'qr_regenerating';
-  if (showQr) {
+  if (showQr && qrValue) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
         <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
@@ -155,7 +156,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
             {isRefreshingQr ? 'Refreshing QR code...' : 'Scan this QR code with WhatsApp to connect'}
           </p>
           <div className="flex justify-center mb-4 sm:mb-6 p-2 sm:p-4 bg-white rounded-lg">
-            <QRCode value={status.qr} size={Math.min(256, typeof window !== 'undefined' ? window.innerWidth - 80 : 256)} />
+            <QRCode value={qrValue} size={Math.min(256, typeof window !== 'undefined' ? window.innerWidth - 80 : 256)} />
           </div>
           <p className="text-sm text-zinc-500 dark:text-zinc-500">
             Open WhatsApp → Settings → Linked Devices → Link a Device
