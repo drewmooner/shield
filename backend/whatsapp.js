@@ -31,9 +31,6 @@ class WhatsAppHandler {
     this.onStatusChange = null;
     this.eventEmitter = null;
     this.currentStatus = { status: 'initializing' };
-    this.sessionPath = null;
-    this.sessionName = null;
-    this.fullSessionPath = null;
     this.connectionTime = null; // Track when connection was established to filter historical messages
     this.skipContactLeadCreationUntil = 0; // Skip creating leads from contacts for N ms after fresh clear
     this.io = null; // ✅ Store io instance here

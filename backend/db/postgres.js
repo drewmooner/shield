@@ -169,8 +169,9 @@ export class PostgresDriver {
 
   async _ensureDefaultSettings() {
     const client = await this.pool.connect();
+    const clientId = 'default';
     try {
-      const r = await client.query('SELECT COUNT(*)::int AS c FROM settings');
+      const r = await client.query('SELECT COUNT(*)::int AS c FROM settings WHERE client_id = $1', [clientId]);
       if (r.rows[0].c > 0) {
         const defaults = {
           keyword_replies: '[]',
@@ -181,14 +182,14 @@ export class PostgresDriver {
         };
         for (const [k, v] of Object.entries(defaults)) {
           await client.query(
-            'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING',
-            [k, v]
+            'INSERT INTO settings (client_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (client_id, key) DO NOTHING',
+            [clientId, k, v]
           );
         }
         return;
       }
       for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
-        await client.query('INSERT INTO settings (key, value) VALUES ($1, $2)', [k, v]);
+        await client.query('INSERT INTO settings (client_id, key, value) VALUES ($1, $2, $3)', [clientId, k, v]);
       }
     } finally {
       client.release();
