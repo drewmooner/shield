@@ -4,10 +4,11 @@
   "description": "Shield WhatsApp Triage Assistant Backend",
   "main": "server.js",
   "type": "module",
+  "engines": { "node": ">=18 <22" },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "build": "npm install"
+    "build": "npm ci || npm install"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
