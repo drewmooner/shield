@@ -14,6 +14,7 @@ interface BotStatus {
   isConnected?: boolean;
   timestamp?: string;
   reconnectAttempts?: number;
+  reason?: string;
 }
 
 export default function QRAuth({ onConnected }: { onConnected: () => void }) {
@@ -80,7 +81,12 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
     if (!socket || !connected) return;
 
     const handleStatusUpdate = (data: BotStatus) => {
-      setStatus(data);
+      // Keep showing last QR when backend sends qr_ready without new qr (e.g. qr_regenerating)
+      setStatus((prev) => {
+        const next = { ...data };
+        if (data.status === 'qr_ready' && !next.qr && prev.qr) next.qr = prev.qr;
+        return next;
+      });
       setError(null);
 
       if (data.status === 'connected' && data.isConnected) {
@@ -135,7 +141,10 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
     );
   }
 
-  if (status.status === 'qr_ready' && status.qr) {
+  // Show QR screen for qr_ready (and when reconnecting but we still have a QR – seamless refresh)
+  const showQr = (status.status === 'qr_ready' || (status.status === 'reconnecting' && status.qr)) && status.qr;
+  const isRefreshingQr = status.reason === 'qr_regenerating';
+  if (showQr) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black p-4">
         <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg p-6 sm:p-8 text-center w-full max-w-md">
@@ -143,7 +152,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
             Shield WhatsApp Login
           </h1>
           <p className="text-sm sm:text-base text-zinc-600 dark:text-zinc-400 mb-4 sm:mb-6">
-            Scan this QR code with WhatsApp to connect
+            {isRefreshingQr ? 'Refreshing QR code...' : 'Scan this QR code with WhatsApp to connect'}
           </p>
           <div className="flex justify-center mb-4 sm:mb-6 p-2 sm:p-4 bg-white rounded-lg">
             <QRCode value={status.qr} size={Math.min(256, typeof window !== 'undefined' ? window.innerWidth - 80 : 256)} />

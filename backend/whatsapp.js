@@ -32,6 +32,7 @@ class WhatsAppHandler {
     this.connectionTime = null; // Track when connection was established to filter historical messages
     this.skipContactLeadCreationUntil = 0; // Skip creating leads from contacts for N ms after fresh clear
     this.io = null; // ✅ Store io instance here
+    this.isRegeneratingQr = false; // When true, 'close' during QR refresh does not emit reconnecting
     this.messageReceivedCount = 0; // Track total messages received
     this.lastMessageTime = null; // Track when last message was received
     this.sentMessageLeadMap = new Map(); // msgId -> leadId pin for fromMe upserts
@@ -381,6 +382,7 @@ class WhatsAppHandler {
 
     // PRIORITY: Handle QR code FIRST - check before anything else
     if (qr) {
+      this.isRegeneratingQr = false; // New QR arrived, no longer regenerating
       console.log('\n📡 connection.update received:');
       console.log('   ✅ QR CODE DETECTED!');
       console.log('   QR length:', qr.length);
@@ -424,6 +426,11 @@ class WhatsAppHandler {
 
     // Handle connection state changes
     if (connection === 'close') {
+      // During QR refresh we intentionally close the socket; don't emit reconnecting/disconnected
+      if (this.isRegeneratingQr) {
+        console.log('   (QR regenerating – staying on qr_ready, no status change)');
+        return;
+      }
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const error = lastDisconnect?.error;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -536,6 +543,7 @@ class WhatsAppHandler {
           console.log('   🔄 QR code expired. Regenerating QR code...');
           this.isConnecting = false;
           this.reconnectAttempts = 0; // Reset attempts for QR regeneration
+          this.isRegeneratingQr = true; // Stay on qr_ready; close events will not emit reconnecting
           // Regenerate QR by reinitializing
           setTimeout(async () => {
             console.log('   📱 Regenerating QR code...');
