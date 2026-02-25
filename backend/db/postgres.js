@@ -84,6 +84,14 @@ export async function runMigrations(pool) {
         data JSONB,
         PRIMARY KEY (session_name, key_name)
       );
+
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     `);
     // Add client_id so we know who owns each record (saved alongside data; used on refresh)
     await client.query(`
@@ -191,6 +199,49 @@ export class PostgresDriver {
       for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
         await client.query('INSERT INTO settings (client_id, key, value) VALUES ($1, $2, $3)', [clientId, k, v]);
       }
+    } finally {
+      client.release();
+    }
+  }
+
+  async createUser(id, email, passwordHash) {
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        'INSERT INTO users (id, email, password_hash, created_at) VALUES ($1, $2, $3, NOW())',
+        [id, email.toLowerCase().trim(), passwordHash]
+      );
+      return { id, email: email.toLowerCase().trim(), created_at: new Date().toISOString() };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getUserByEmail(email) {
+    const client = await this.pool.connect();
+    try {
+      const r = await client.query(
+        'SELECT id, email, password_hash, created_at FROM users WHERE email = $1 LIMIT 1',
+        [email.toLowerCase().trim()]
+      );
+      if (r.rows.length === 0) return null;
+      const row = r.rows[0];
+      return { id: row.id, email: row.email, password_hash: row.password_hash, created_at: row.created_at };
+    } finally {
+      client.release();
+    }
+  }
+
+  async getUserById(id) {
+    const client = await this.pool.connect();
+    try {
+      const r = await client.query(
+        'SELECT id, email, created_at FROM users WHERE id = $1 LIMIT 1',
+        [id]
+      );
+      if (r.rows.length === 0) return null;
+      const row = r.rows[0];
+      return { id: row.id, email: row.email, created_at: row.created_at };
     } finally {
       client.release();
     }
@@ -653,6 +704,23 @@ export class PostgresDriver {
       );
       if (r.rowCount > 0) console.log(`🧹 Pruned ${r.rowCount} old messages (older than ${olderThanDays} days)`);
       return r.rowCount;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Delete messages older than N days for all tenants. Always logs the number of deleted rows. */
+  async pruneOldMessagesGlobally(olderThanDays = 5) {
+    await this._waitInit();
+    const client = await this.pool.connect();
+    try {
+      const r = await client.query(
+        "DELETE FROM messages WHERE timestamp < NOW() - ($1::text || ' days')::interval RETURNING id",
+        [String(olderThanDays)]
+      );
+      const deleted = r.rowCount ?? 0;
+      console.log(`🧹 Deleted ${deleted} message(s) older than ${olderThanDays} days from PostgreSQL.`);
+      return deleted;
     } finally {
       client.release();
     }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { getLead, sendMessage, completeLead, deleteLead } from '../../lib/api';
+import { getLead, sendMessage, completeLead, deleteLead, getBotStatus } from '../../lib/api';
 import { useSocketContext } from '../../providers/SocketProvider';
 
 interface Message {
@@ -115,10 +115,8 @@ export default function LeadDetailPage() {
     const checkInitialStatus = async () => {
       if (connectionTimestampRef.current) return;
       try {
-        const res = await fetch('/api/bot/status');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'connected' && data.isConnected && data.connectionTime) {
+        const data = await getBotStatus();
+        if (data.status === 'connected' && data.isConnected && data.connectionTime) {
             const raw = data.connectionTime;
             const backendConnectionTime = typeof raw === 'number'
               ? raw
@@ -129,7 +127,6 @@ export default function LeadDetailPage() {
             console.log('🕐 WhatsApp already connected (from API), using backend timestamp');
             console.log(`   Backend connectionTime: ${new Date(backendConnectionTime).toISOString()}`);
           }
-        }
       } catch (err) {
         console.error('Failed to check initial status:', err);
       }

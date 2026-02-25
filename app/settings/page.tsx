@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getSettings, updateSettings, exportChatLogs, refreshContactNames, uploadAudio, getAudioFileUrl, deleteAudio } from '../lib/api';
+import { getSettings, updateSettings, uploadAudio, getAudioBlobUrl, deleteAudio } from '../lib/api';
 import { useSocketContext } from '../providers/SocketProvider';
+import { useAuth } from '../providers/AuthProvider';
 
 interface SavedAudio {
   id: string;
@@ -15,6 +16,27 @@ interface KeywordReply {
   message: string;
   replyType: 'text' | 'audio';
   audioId?: string;
+}
+
+function AudioPlayerWithAuth({ audioId, className }: { audioId: string; className?: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let blobUrl: string | null = null;
+    getAudioBlobUrl(audioId)
+      .then((url) => {
+        blobUrl = url;
+        setSrc(url);
+        setError(false);
+      })
+      .catch(() => setError(true));
+    return () => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [audioId]);
+  if (error) return <span className="text-sm text-zinc-500">Failed to load audio</span>;
+  if (!src) return <span className="text-sm text-zinc-500">Loading…</span>;
+  return <audio controls src={src} className={className} />;
 }
 
 function parseKeywordReplies(v: unknown): KeywordReply[] {
@@ -51,6 +73,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [keywordSaveStatus, setKeywordSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   const { socket, connected } = useSocketContext();
+  const { user, isAuthenticated, logout } = useAuth();
 
   useEffect(() => {
     loadSettings();
@@ -430,7 +453,7 @@ export default function SettingsPage() {
           <ul ref={audioListRef} className="space-y-2">
             {savedAudios.map((a) => (
               <li key={a.id} className="flex items-center gap-2 py-1.5 px-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
-                <audio controls src={`${getAudioFileUrl(a.id)}&t=${Date.now()}`} className="flex-1 max-w-sm h-8" />
+                <AudioPlayerWithAuth audioId={a.id} className="flex-1 max-w-sm h-8" />
                 <button
                   type="button"
                   onClick={() => handleDeleteAudio(a.id)}
@@ -553,6 +576,26 @@ export default function SettingsPage() {
             {saving ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
+
+        {isAuthenticated && user && (
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-6 mt-6">
+            <h2 className="text-lg font-semibold mb-2 text-black dark:text-zinc-50">Account</h2>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-4">
+              Signed in as <span className="font-medium text-zinc-900 dark:text-zinc-50">{user.email}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm('Log out of Shield? You will need to sign in again to access your bot.')) {
+                  logout();
+                }
+              }}
+              className="px-4 py-2 rounded-lg text-sm bg-zinc-200 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 hover:bg-red-100 dark:hover:bg-red-900/30 hover:text-red-700 dark:hover:text-red-400 transition-colors"
+            >
+              Log out
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

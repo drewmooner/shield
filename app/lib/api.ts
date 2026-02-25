@@ -1,6 +1,6 @@
+import { getToken, removeToken } from './auth';
+
 function getApiUrl() {
-  // In browser: use NEXT_PUBLIC_API_URL so production (Vercel) points to Render backend
-  // Set NEXT_PUBLIC_API_URL=https://your-app.onrender.com/api on Vercel
   if (typeof window !== 'undefined') {
     return process.env.NEXT_PUBLIC_API_URL || '/api';
   }
@@ -9,39 +9,43 @@ function getApiUrl() {
 
 const API_URL = getApiUrl();
 
-const CLIENT_ID_KEY = 'shield_client_id';
-
-/** Sync: returns stored client ID or null (call ensureClientId() first for API/socket). */
-export function getClientId(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(CLIENT_ID_KEY);
-}
-
-/** Ensures we have a client ID (fetch from backend if missing), stores it, returns it. */
-export async function ensureClientId(): Promise<string> {
-  if (typeof window !== 'undefined') {
-    const stored = localStorage.getItem(CLIENT_ID_KEY);
-    if (stored) return stored;
-  }
-  const res = await fetch(`${API_URL}/client/id`, { cache: 'no-store' });
-  if (!res.ok) throw new Error('Failed to get client ID');
-  const { clientId } = await res.json();
-  if (typeof window !== 'undefined' && clientId) {
-    localStorage.setItem(CLIENT_ID_KEY, clientId);
-  }
-  return clientId || 'default';
-}
-
-async function fetchWithClientId(url: string, options: RequestInit = {}): Promise<Response> {
-  const clientId = await ensureClientId();
+async function fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers);
-  headers.set('X-Client-Id', clientId);
-  return fetch(url, { ...options, headers });
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 && typeof window !== 'undefined') {
+    removeToken();
+    window.location.href = '/login';
+  }
+  return res;
+}
+
+export async function login(email: string, password: string) {
+  const res = await fetch(`${API_URL}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Login failed: ${res.status}`);
+  return data as { token: string; user: { id: string; email: string } };
+}
+
+export async function register(email: string, password: string) {
+  const res = await fetch(`${API_URL}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Registration failed: ${res.status}`);
+  return data as { token: string; user: { id: string; email: string } };
 }
 
 export async function getBotStatus(options?: { signal?: AbortSignal }) {
   const url = `${API_URL}/bot/status`;
-  const res = await fetchWithClientId(url, {
+  const res = await fetchWithAuth(url, {
     cache: 'no-store',
     signal: options?.signal,
   });
@@ -72,7 +76,7 @@ async function safeJsonResponse(res: Response) {
 }
 
 export async function pauseBot() {
-  const res = await fetchWithClientId(`${API_URL}/bot/pause`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/bot/pause`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to pause: ${res.status} ${text.substring(0, 100)}`);
@@ -81,7 +85,7 @@ export async function pauseBot() {
 }
 
 export async function resumeBot() {
-  const res = await fetchWithClientId(`${API_URL}/bot/resume`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/bot/resume`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to resume: ${res.status} ${text.substring(0, 100)}`);
@@ -90,7 +94,7 @@ export async function resumeBot() {
 }
 
 export async function reconnectBot() {
-  const res = await fetchWithClientId(`${API_URL}/bot/reconnect`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/bot/reconnect`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to reconnect: ${res.status} ${text.substring(0, 100)}`);
@@ -100,7 +104,7 @@ export async function reconnectBot() {
 
 export async function getLeads(status?: string) {
   const url = status ? `${API_URL}/leads?status=${status}` : `${API_URL}/leads`;
-  const res = await fetchWithClientId(url, {
+  const res = await fetchWithAuth(url, {
     cache: 'no-store',
     headers: {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -116,7 +120,7 @@ export async function getLeads(status?: string) {
 }
 
 export async function getLead(id: string) {
-  const res = await fetchWithClientId(`${API_URL}/leads/${id}`, {
+  const res = await fetchWithAuth(`${API_URL}/leads/${id}`, {
     cache: 'no-store',
     headers: {
       'Cache-Control': 'no-cache, no-store, must-revalidate',
@@ -132,7 +136,7 @@ export async function getLead(id: string) {
 }
 
 export async function completeLead(id: string) {
-  const res = await fetchWithClientId(`${API_URL}/leads/${id}/complete`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/leads/${id}/complete`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to complete lead: ${res.status} ${text.substring(0, 100)}`);
@@ -141,7 +145,7 @@ export async function completeLead(id: string) {
 }
 
 export async function deleteLead(id: string) {
-  const res = await fetchWithClientId(`${API_URL}/leads/${id}`, { method: 'DELETE' });
+  const res = await fetchWithAuth(`${API_URL}/leads/${id}`, { method: 'DELETE' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to delete lead: ${res.status} ${text.substring(0, 100)}`);
@@ -150,7 +154,7 @@ export async function deleteLead(id: string) {
 }
 
 export async function clearAllMessages() {
-  const res = await fetchWithClientId(`${API_URL}/messages/clear`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/messages/clear`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to clear messages: ${res.status} ${text.substring(0, 100)}`);
@@ -159,7 +163,7 @@ export async function clearAllMessages() {
 }
 
 export async function sendMessage(phoneNumber: string, message: string, leadId?: string) {
-  const res = await fetchWithClientId(`${API_URL}/messages/send`, {
+  const res = await fetchWithAuth(`${API_URL}/messages/send`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phoneNumber, message, leadId }),
@@ -172,7 +176,7 @@ export async function sendMessage(phoneNumber: string, message: string, leadId?:
 }
 
 export async function getSettings(noCache = false) {
-  const res = await fetchWithClientId(`${API_URL}/settings${noCache ? `?t=${Date.now()}` : ''}`, {
+  const res = await fetchWithAuth(`${API_URL}/settings${noCache ? `?t=${Date.now()}` : ''}`, {
     ...(noCache ? { cache: 'no-store' as RequestCache } : {}),
   });
   if (!res.ok) {
@@ -183,7 +187,7 @@ export async function getSettings(noCache = false) {
 }
 
 export async function updateSettings(settings: Record<string, unknown>) {
-  const res = await fetchWithClientId(`${API_URL}/settings`, {
+  const res = await fetchWithAuth(`${API_URL}/settings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
@@ -196,7 +200,7 @@ export async function updateSettings(settings: Record<string, unknown>) {
 }
 
 export async function getLogs(limit = 50) {
-  const res = await fetchWithClientId(`${API_URL}/logs?limit=${limit}`);
+  const res = await fetchWithAuth(`${API_URL}/logs?limit=${limit}`);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to get logs: ${res.status} ${text.substring(0, 100)}`);
@@ -205,7 +209,7 @@ export async function getLogs(limit = 50) {
 }
 
 export async function disconnectBot() {
-  const res = await fetchWithClientId(`${API_URL}/bot/disconnect`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/bot/disconnect`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to disconnect: ${res.status} ${text.substring(0, 100)}`);
@@ -217,7 +221,7 @@ export async function exportChatLogs(format: 'json' | 'csv' = 'json') {
   try {
     const url = `${API_URL}/export/logs?format=${format}`;
     console.log('Exporting from:', url);
-    const res = await fetchWithClientId(url);
+    const res = await fetchWithAuth(url);
     if (!res.ok) {
       const errorText = await res.text();
       console.error('Export error:', res.status, errorText);
@@ -239,7 +243,7 @@ export async function exportChatLogs(format: 'json' | 'csv' = 'json') {
 }
 
 export async function refreshContactNames() {
-  const res = await fetchWithClientId(`${API_URL}/contacts/refresh`, { method: 'POST' });
+  const res = await fetchWithAuth(`${API_URL}/contacts/refresh`, { method: 'POST' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Failed to refresh contact names: ${res.status} ${text.substring(0, 100)}`);
@@ -254,10 +258,19 @@ export function getAudioFileUrl(id: string): string {
   return path;
 }
 
+/** Fetch audio with auth and return a blob URL (revoke with URL.revokeObjectURL when done). */
+export async function getAudioBlobUrl(id: string): Promise<string> {
+  const url = `${API_URL}/settings/audio/file?id=${encodeURIComponent(id)}`;
+  const res = await fetchWithAuth(url);
+  if (!res.ok) throw new Error(`Failed to load audio: ${res.status}`);
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 export async function uploadAudio(file: File) {
   const formData = new FormData();
   formData.append('audio', file);
-  const res = await fetchWithClientId(`${API_URL}/settings/audio`, { method: 'POST', body: formData });
+  const res = await fetchWithAuth(`${API_URL}/settings/audio`, { method: 'POST', body: formData });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Upload failed: ${text.substring(0, 100)}`);
@@ -266,7 +279,7 @@ export async function uploadAudio(file: File) {
 }
 
 export async function deleteAudio(id: string) {
-  const res = await fetchWithClientId(`${API_URL}/settings/audio/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await fetchWithAuth(`${API_URL}/settings/audio/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Delete failed: ${text.substring(0, 100)}`);

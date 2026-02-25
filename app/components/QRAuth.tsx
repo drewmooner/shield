@@ -3,10 +3,7 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode.react';
 import { useSocketContext } from '../providers/SocketProvider';
-
-const API_URL = typeof window !== 'undefined' 
-  ? (process.env.NEXT_PUBLIC_API_URL || '/api')
-  : 'http://localhost:3002/api';
+import { getBotStatus, reconnectBot } from '../lib/api';
 
 interface BotStatus {
   status: string;
@@ -33,19 +30,8 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
       try {
         const ctrl = new AbortController();
         const id = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-        const res = await fetch(`${API_URL}/bot/status`, { signal: ctrl.signal });
+        const data = await getBotStatus({ signal: ctrl.signal });
         clearTimeout(id);
-        if (cancelled.current) return false;
-        if (res.status === 503 || res.status === 502) {
-          if (attempt < retries) {
-            await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
-            continue;
-          }
-        }
-        if (!res.ok) {
-          throw new Error(`Backend returned ${res.status}`);
-        }
-        const data = await res.json();
         if (cancelled.current) return false;
         setStatus(data);
         setError(null);
@@ -53,8 +39,14 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
           onConnected();
         }
         return true;
-      } catch (err) {
+      } catch (err: unknown) {
         if (cancelled.current) return false;
+        const msg = (err instanceof Error ? err.message : String(err)) || '';
+        const isRetryable = msg.includes('503') || msg.includes('502');
+        if (isRetryable && attempt < retries) {
+          await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
+          continue;
+        }
         if (attempt < retries) {
           await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
           continue;
@@ -207,7 +199,9 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
           <button
             onClick={async () => {
               try {
-                await fetch(`${API_URL}/bot/reconnect`, { method: 'POST' });
+                await reconnectBot();
+                setError(null);
+                checkStatus(MAX_RETRIES, cancelledRef).catch(() => {});
               } catch (err) {
                 console.error(err);
               }
@@ -237,26 +231,9 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
         </p>
         <button
           onClick={async () => {
-                  try {
-                    const res = await fetch(`${API_URL}/bot/reconnect`, { method: 'POST' });
-                    if (!res.ok) {
-                      const text = await res.text();
-                      throw new Error(`Reconnect failed: ${res.status} ${text.substring(0, 100)}`);
-                    }
-                    const contentType = res.headers.get('content-type');
-                    let data;
-                    if (contentType && contentType.includes('application/json')) {
-                      data = await res.json();
-                    } else {
-                      const text = await res.text();
-                      console.error('Invalid response:', text);
-                      data = { success: false };
-                    }
-              console.log('Reconnect response:', data);
-              // Force status check after reconnect
-              setTimeout(() => {
-                window.location.reload();
-              }, 1000);
+            try {
+              await reconnectBot();
+              setTimeout(() => window.location.reload(), 1000);
             } catch (err) {
               console.error('Reconnect error:', err);
             }

@@ -3,10 +3,12 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import { useAuth } from '../providers/AuthProvider';
 
 export default function Nav() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  const { user, isAuthenticated, logout } = useAuth();
 
   const links = [
     { href: '/', label: 'Dashboard' },
@@ -61,6 +63,29 @@ export default function Nav() {
               </li>
             ))}
           </ul>
+          <div className="mt-6 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+            {isAuthenticated && user ? (
+              <>
+                <p className="px-4 py-1 text-sm text-zinc-500 dark:text-zinc-400 truncate" title={user.email}>
+                  {user.email}
+                </p>
+                <button
+                  onClick={() => { setIsOpen(false); logout(); }}
+                  className="block w-full text-left px-4 py-2 rounded-lg text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                >
+                  Log out
+                </button>
+              </>
+            ) : (
+              <Link
+                href="/login"
+                onClick={() => setIsOpen(false)}
+                className="block px-4 py-2 rounded-lg text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                Log in
+              </Link>
+            )}
+          </div>
         </div>
       </nav>
     </>

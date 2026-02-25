@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import Database from './database.js';
@@ -12,6 +14,9 @@ import { dirname, join } from 'path';
 import { existsSync, mkdirSync, createReadStream, unlinkSync } from 'fs';
 
 dotenv.config();
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const BCRYPT_ROUNDS = 12;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -35,7 +40,7 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
-// Bind immediately so Render/cloud sees the port open (before DB/WhatsApp init)
+// Bind immediately so the host sees the port open (before DB/WhatsApp init)
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -92,39 +97,95 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static(join(__dirname, '../public')));
 
-// Client ID: from header (X-Client-Id) or query (clientId); default 'default' for backward compat
-const CLIENT_ID_HEADER = 'x-client-id';
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function isValidClientId(id) {
-  return typeof id === 'string' && (id === 'default' || UUID_REGEX.test(id));
-}
-function getClientIdFromRequest(req) {
-  const id = (req.headers[CLIENT_ID_HEADER] || req.query?.clientId || '').trim();
-  return isValidClientId(id) ? id : 'default';
-}
-app.use((req, res, next) => {
-  req.clientId = getClientIdFromRequest(req);
-  next();
-});
-
-// GET /api/client/id – return existing clientId from header or generate new one (for frontend to store)
-app.get('/api/client/id', (req, res) => {
-  const fromHeader = (req.headers[CLIENT_ID_HEADER] || '').trim();
-  const clientId = isValidClientId(fromHeader) ? fromHeader : randomUUID();
-  res.json({ clientId });
-});
-
 // Initialize database (PostgreSQL when DATABASE_URL set, else JSON file)
 const db = process.env.DATABASE_URL
   ? new Database({ databaseUrl: process.env.DATABASE_URL })
   : new Database(process.env.DB_PATH || 'shield.json');
 
-// Per-client WhatsApp handlers (clientId -> { whatsapp, state }); state.connectionStatus is mutable
-const clientHandlers = new Map();
-function getOrCreateHandler(clientId) {
-  if (clientHandlers.has(clientId)) return clientHandlers.get(clientId);
+// ----- Auth: JWT optional; when JWT_SECRET set, multi-tenant per user -----
+function authMiddleware(req, res, next) {
+  if (!JWT_SECRET) {
+    req.userId = 'default';
+    return next();
+  }
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized', code: 'NO_TOKEN' });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.sub;
+    req.user = decoded;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' });
+  }
+}
+
+app.post('/api/auth/register', async (req, res) => {
+  if (!JWT_SECRET) return res.status(503).json({ error: 'Auth not configured (JWT_SECRET)' });
+  const { email, password } = req.body || {};
+  if (!email || typeof email !== 'string' || !password || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+  const trimmedEmail = email.trim().toLowerCase();
+  if (!trimmedEmail || password.length < 8) {
+    return res.status(400).json({ error: 'Email required and password must be at least 8 characters' });
+  }
+  try {
+    const existing = await db.getUserByEmail(trimmedEmail);
+    if (existing) return res.status(409).json({ error: 'This email is already registered. Use the login page instead.' });
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const id = randomUUID();
+    await db.createUser(id, trimmedEmail, passwordHash);
+    const token = jwt.sign({ sub: id, email: trimmedEmail }, JWT_SECRET, { expiresIn: '7d' });
+    return res.json({ token, user: { id, email: trimmedEmail } });
+  } catch (err) {
+    console.error('Register error:', err);
+    return res.status(500).json({ error: 'Registration failed' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  if (!JWT_SECRET) return res.status(503).json({ error: 'Auth not configured (JWT_SECRET)' });
+  const { email, password } = req.body || {};
+  if (!email || typeof email !== 'string' || !password || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Email and password required' });
+  }
+  const trimmedEmail = email.trim().toLowerCase();
+  try {
+    const user = await db.getUserByEmail(trimmedEmail);
+    if (!user) return res.status(401).json({ error: 'Invalid email or password' });
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) return res.status(401).json({ error: 'Invalid email or password' });
+    const token = jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    return res.json({ token, user: { id: user.id, email: user.email } });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  if (!JWT_SECRET || req.userId === 'default') return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const user = await db.getUserById(req.userId);
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    return res.json({ user: { id: user.id, email: user.email } });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get user' });
+  }
+});
+
+// Per-user WhatsApp handlers (userId -> { whatsapp, state })
+const userHandlers = new Map();
+function getOrCreateHandler(userId) {
+  const uid = userId || 'default';
+  if (userHandlers.has(uid)) return userHandlers.get(uid);
   const state = { connectionStatus: { status: 'initializing', timestamp: new Date().toISOString() } };
-  const whatsapp = new WhatsAppHandler(db, { sessionName: clientId, clientId });
+  const sessionName = uid === 'default' ? 'shield-session' : `user-${uid}`;
+  const whatsapp = new WhatsAppHandler(db, { sessionName, clientId: uid });
   whatsapp.setIO(io);
   whatsapp.setStatusCallback((status) => {
     const existingQr = state.connectionStatus.qr;
@@ -135,35 +196,56 @@ function getOrCreateHandler(clientId) {
       connectionTime: whatsapp.connectionTime || status.connectionTime || null,
       qr: newQr || existingQr
     };
-    io.to(`client:${clientId}`).emit('status_update', state.connectionStatus);
+    if (JWT_SECRET) io.to(`user:${uid}`).emit('status_update', state.connectionStatus);
+    else io.emit('status_update', state.connectionStatus);
   });
   whatsapp.setEventEmitter((eventName, data) => {
     try {
-      io.to(`client:${clientId}`).emit(eventName, data);
+      if (JWT_SECRET) io.to(`user:${uid}`).emit(eventName, data);
+      else io.emit(eventName, data);
     } catch (error) {
-      console.error(`❌ Error emitting ${eventName} to client ${clientId}:`, error);
+      console.error(`❌ Error emitting ${eventName}:`, error);
     }
   });
   whatsapp.initialize().catch((error) => {
-    console.error(`❌ Failed to initialize WhatsApp for client ${clientId}:`, error);
+    console.error(`❌ Failed to initialize WhatsApp for user ${uid}:`, error);
     state.connectionStatus = { status: 'error', error: error.message, timestamp: new Date().toISOString() };
   });
-  clientHandlers.set(clientId, { whatsapp, state });
-  return clientHandlers.get(clientId);
+  userHandlers.set(uid, { whatsapp, state });
+  return userHandlers.get(uid);
 }
 
-// Prune old messages on startup (single db for now)
+function emitToUser(userId, eventName, data) {
+  if (JWT_SECRET) io.to(`user:${userId}`).emit(eventName, data);
+  else io.emit(eventName, data);
+}
+
+// Prune old messages from PostgreSQL on startup (all tenants; logs deleted row count)
 const pruneDays = parseInt(process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS || '5', 10);
 if (Number.isFinite(pruneDays) && pruneDays > 0) {
-  db.pruneOldMessages(pruneDays, 'default').catch((err) => console.warn('Prune on startup:', err.message));
+  db.pruneOldMessagesGlobally(pruneDays).catch((err) => console.warn('Prune on startup:', err.message));
 }
 
-// Socket.IO: join each socket to its client room; send that client's initial status
+// Socket.IO: auth by token when JWT_SECRET set; send that user's status
 io.on('connection', (socket) => {
-  const clientId = socket.handshake.auth?.clientId || socket.handshake.query?.clientId || 'default';
-  const cid = isValidClientId(clientId) ? clientId : 'default';
-  socket.join(`client:${cid}`);
-  const handler = getOrCreateHandler(cid);
+  let userId = 'default';
+  if (JWT_SECRET) {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        userId = decoded.sub;
+        socket.join(`user:${userId}`);
+      } catch (e) {
+        socket.emit('status_update', { status: 'error', error: 'Invalid token', timestamp: new Date().toISOString() });
+        return;
+      }
+    } else {
+      socket.emit('status_update', { status: 'error', error: 'No token', timestamp: new Date().toISOString() });
+      return;
+    }
+  }
+  const handler = getOrCreateHandler(userId);
   socket.emit('status_update', handler.state.connectionStatus);
   socket.on('disconnect', (reason) => {
     console.log(`❌ Client disconnected: ${socket.id} (reason: ${reason})`);
@@ -171,11 +253,17 @@ io.on('connection', (socket) => {
 });
 
 // API Routes
+// Auth: skip for health and auth routes; otherwise require JWT when JWT_SECRET set
+app.use((req, res, next) => {
+  const p = req.originalUrl || req.url || '';
+  if (p === '/api/health' || p.startsWith('/api/auth')) return next();
+  return authMiddleware(req, res, next);
+});
 
 // Debug endpoint to check WhatsApp listener status
 app.get('/api/debug/listeners', async (req, res) => {
   try {
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const status = whatsapp.getStatus();
     
     // Safely access socket properties
@@ -271,7 +359,7 @@ app.get('/api/test-messages', async (req, res) => {
 // Refresh all contact names directly from WhatsApp
 app.post('/api/contacts/refresh', async (req, res) => {
   try {
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const result = await whatsapp.refreshAllContactNames();
     res.json(result);
   } catch (error) {
@@ -282,7 +370,7 @@ app.post('/api/contacts/refresh', async (req, res) => {
 // Bot status
 app.get('/api/bot/status', async (req, res) => {
   try {
-    const handler = getOrCreateHandler(req.clientId);
+    const handler = getOrCreateHandler(req.userId);
     const { whatsapp, state } = handler;
     const connectionStatus = state.connectionStatus;
     let status = { status: 'initializing', isConnected: false };
@@ -295,7 +383,7 @@ app.get('/api/bot/status', async (req, res) => {
     
     let logs = [];
     try {
-      logs = await db.getRecentLogs(20, req.clientId);
+      logs = await db.getRecentLogs(20, req.userId);
     } catch (logError) {
       console.error('Error fetching logs:', logError);
       logs = [];
@@ -303,7 +391,7 @@ app.get('/api/bot/status', async (req, res) => {
     
     let botPaused = 'false';
     try {
-      botPaused = await db.getSetting('bot_paused', req.clientId) || 'false';
+      botPaused = await db.getSetting('bot_paused', req.userId) || 'false';
     } catch (settingError) {
       console.error('Error fetching bot_paused setting:', settingError);
     }
@@ -378,23 +466,23 @@ app.get('/api/bot/status', async (req, res) => {
 
 // Pause/Resume bot (scoped to this client's handler; emit to this client only)
 app.post('/api/bot/pause', async (req, res) => {
-  await db.setSetting('bot_paused', 'true', req.clientId);
-  await db.addLog('bot_paused', { timestamp: new Date().toISOString() }, req.clientId);
-  io.to(`client:${req.clientId}`).emit('bot_status_changed', { bot_paused: 'true' });
+  await db.setSetting('bot_paused', 'true', req.userId);
+  await db.addLog('bot_paused', { timestamp: new Date().toISOString() }, req.userId);
+  emitToUser(req.userId, 'bot_status_changed', { bot_paused: 'true' });
   res.json({ success: true, paused: true });
 });
 
 app.post('/api/bot/resume', async (req, res) => {
-  await db.setSetting('bot_paused', 'false', req.clientId);
-  await db.addLog('bot_resumed', { timestamp: new Date().toISOString() }, req.clientId);
-  io.to(`client:${req.clientId}`).emit('bot_status_changed', { bot_paused: 'false' });
+  await db.setSetting('bot_paused', 'false', req.userId);
+  await db.addLog('bot_resumed', { timestamp: new Date().toISOString() }, req.userId);
+  emitToUser(req.userId, 'bot_status_changed', { bot_paused: 'false' });
   res.json({ success: true, paused: false });
 });
 
 // Reconnect
 app.post('/api/bot/reconnect', async (req, res) => {
   try {
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     await whatsapp.reconnect();
     res.json({ success: true, message: 'Reconnection initiated' });
   } catch (error) {
@@ -405,7 +493,7 @@ app.post('/api/bot/reconnect', async (req, res) => {
 // Disconnect
 app.post('/api/bot/disconnect', async (req, res) => {
   try {
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     await whatsapp.disconnect();
     res.json({ success: true, message: 'Disconnected successfully' });
   } catch (error) {
@@ -422,12 +510,12 @@ app.get('/api/leads', async (req, res) => {
     res.setHeader('Expires', '0');
     
     const { status } = req.query;
-    const leads = await db.getAllLeads(status || null, req.clientId);
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const leads = await db.getAllLeads(status || null, req.userId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const connectionTime = whatsapp.connectionTime;
     const leadsWithMessages = await Promise.all(
       leads.map(async (lead) => {
-let messages = await db.getMessagesByLead(lead.id, req.clientId);
+let messages = await db.getMessagesByLead(lead.id, req.userId);
         // Filter to only show messages after connection
         if (connectionTime) {
           messages = messages.filter(msg => {
@@ -470,7 +558,7 @@ app.get('/api/leads/:id', async (req, res) => {
     res.setHeader('Expires', '0');
     
     const leadId = req.params.id;
-    const lead = await db.getLead(leadId, req.clientId);
+    const lead = await db.getLead(leadId, req.userId);
     if (!lead) {
       console.log(`❌ Lead not found: ${leadId}`);
       // Check if lead exists with different ID (might be a normalization issue)
@@ -484,8 +572,8 @@ app.get('/api/leads/:id', async (req, res) => {
     // console.log(`✅ Lead found: ${lead.phone_number}`);
     
     // Only return messages created after connection time (filter old messages)
-    let messages = await db.getMessagesByLead(lead.id, req.clientId);
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    let messages = await db.getMessagesByLead(lead.id, req.userId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const connectionTime = whatsapp.connectionTime;
     if (connectionTime) {
       // Filter to only show messages after connection was established
@@ -513,13 +601,13 @@ app.get('/api/leads/:id', async (req, res) => {
 // Mark lead as completed
 app.post('/api/leads/:id/complete', async (req, res) => {
   try {
-    await db.updateLeadStatus(req.params.id, 'completed', req.clientId);
-    await db.addLog('lead_completed', { leadId: req.params.id }, req.clientId);
+    await db.updateLeadStatus(req.params.id, 'completed', req.userId);
+    await db.addLog('lead_completed', { leadId: req.params.id }, req.userId);
     // Emit WebSocket event
-    const lead = await db.getLead(req.params.id, req.clientId);
+    const lead = await db.getLead(req.params.id, req.userId);
     if (lead) {
-      io.emit('lead_updated', lead);
-      io.emit('leads_changed');
+      emitToUser(req.userId, 'lead_updated', lead);
+      emitToUser(req.userId, 'leads_changed');
     }
     res.json({ success: true });
   } catch (error) {
@@ -530,11 +618,11 @@ app.post('/api/leads/:id/complete', async (req, res) => {
 // Delete lead and all messages
 app.delete('/api/leads/:id', async (req, res) => {
   try {
-    await db.deleteLead(req.params.id, req.clientId);
-    await db.addLog('lead_deleted', { leadId: req.params.id }, req.clientId);
+    await db.deleteLead(req.params.id, req.userId);
+    await db.addLog('lead_deleted', { leadId: req.params.id }, req.userId);
     // Emit WebSocket event
-    io.emit('lead_deleted', { id: req.params.id });
-    io.emit('leads_changed');
+    emitToUser(req.userId, 'lead_deleted', { id: req.params.id });
+    emitToUser(req.userId, 'leads_changed');
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -545,7 +633,7 @@ app.delete('/api/leads/:id', async (req, res) => {
 app.post('/api/messages/clear', async (req, res) => {
   try {
     console.log('🧹 Clearing all leads and messages...');
-    const result = await db.clearAll(req.clientId);
+    const result = await db.clearAll(req.userId);
     console.log(`✅ Cleared ${result.leadCount} leads and ${result.messageCount} messages`);
     res.json({ success: true, ...result });
   } catch (error) {
@@ -562,7 +650,7 @@ app.post('/api/messages/send', async (req, res) => {
       return res.status(400).json({ error: 'phoneNumber and message are required' });
     }
 
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const result = await whatsapp.sendManualMessage(phoneNumber, message, io, leadId || null);
     res.json(result);
   } catch (error) {
@@ -574,8 +662,8 @@ app.post('/api/messages/send', async (req, res) => {
 // Get settings
 app.get('/api/settings', async (req, res) => {
   try {
-    const settings = await db.getAllSettings(req.clientId);
-    const productInfo = await db.getProductInfo(req.clientId);
+    const settings = await db.getAllSettings(req.userId);
+    const productInfo = await db.getProductInfo(req.userId);
     
     const { openrouter_api_key, ai_model, ...safeSettings } = settings;
     if (typeof safeSettings.keyword_replies === 'string') {
@@ -606,26 +694,26 @@ app.post('/api/settings', async (req, res) => {
     const { product_info, keyword_replies, ...otherSettings } = req.body;
 
     if (product_info !== undefined) {
-      await db.setProductInfo(product_info, req.clientId);
+      await db.setProductInfo(product_info, req.userId);
     }
 
     if (keyword_replies !== undefined) {
       const value = Array.isArray(keyword_replies) ? JSON.stringify(keyword_replies) : (typeof keyword_replies === 'string' ? keyword_replies : JSON.stringify([]));
-      await db.setSetting('keyword_replies', value, req.clientId);
+      await db.setSetting('keyword_replies', value, req.userId);
     }
 
     for (const [key, value] of Object.entries(otherSettings)) {
       if (value !== undefined) {
-        await db.setSetting(key, typeof value === 'object' ? JSON.stringify(value) : String(value), req.clientId);
+        await db.setSetting(key, typeof value === 'object' ? JSON.stringify(value) : String(value), req.userId);
       }
     }
 
-    await db.addLog('settings_updated', { timestamp: new Date().toISOString() }, req.clientId);
+    await db.addLog('settings_updated', { timestamp: new Date().toISOString() }, req.userId);
     
     // Emit WebSocket event for settings update
-    const updatedSettings = await db.getAllSettings(req.clientId);
-    const updatedProductInfo = await db.getProductInfo(req.clientId);
-    io.emit('settings_updated', { 
+    const updatedSettings = await db.getAllSettings(req.userId);
+    const updatedProductInfo = await db.getProductInfo(req.userId);
+    emitToUser(req.userId, 'settings_updated', { 
       ...updatedSettings, 
       product_info: updatedProductInfo 
     });
@@ -647,7 +735,7 @@ app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) =>
     if (!req.file) return res.status(400).json({ error: 'No audio file' });
     const id = req.audioId || req.file.filename.split('.')[0];
     const relativePath = normalizeAudioPath(join('audio', req.file.filename));
-    const raw = await db.getSetting('saved_audios', req.clientId);
+    const raw = await db.getSetting('saved_audios', req.userId);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -655,10 +743,10 @@ app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) =>
       list = [];
     }
     list.push({ id, path: relativePath });
-    await db.setSetting('saved_audios', JSON.stringify(list), req.clientId);
-    const updatedSettings = await db.getAllSettings(req.clientId);
+    await db.setSetting('saved_audios', JSON.stringify(list), req.userId);
+    const updatedSettings = await db.getAllSettings(req.userId);
     const savedAudios = typeof updatedSettings.saved_audios === 'string' ? JSON.parse(updatedSettings.saved_audios || '[]') : (updatedSettings.saved_audios || []);
-    io.emit('settings_updated', { ...updatedSettings, saved_audios: savedAudios });
+    emitToUser(req.userId, 'settings_updated', { ...updatedSettings, saved_audios: savedAudios });
     res.json({ success: true, id, path: relativePath });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -676,7 +764,7 @@ app.get('/api/settings/audio/file', async (req, res) => {
     let list = [];
 
     if (id) {
-      const raw = await db.getSetting('saved_audios', req.clientId);
+      const raw = await db.getSetting('saved_audios', req.userId);
       try {
         list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
       } catch {
@@ -686,7 +774,7 @@ app.get('/api/settings/audio/file', async (req, res) => {
       if (!entry) return res.status(404).json({ error: 'No audio' });
       fullPath = join(dataDir, normalizeAudioPath(entry.path));
     } else {
-      const legacyPath = await db.getSetting('welcome_audio_path', req.clientId);
+      const legacyPath = await db.getSetting('welcome_audio_path', req.userId);
       if (legacyPath) fullPath = join(dataDir, normalizeAudioPath(legacyPath));
     }
 
@@ -705,7 +793,7 @@ app.delete('/api/settings/audio/:id', async (req, res) => {
   try {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    const raw = await db.getSetting('saved_audios', req.clientId);
+    const raw = await db.getSetting('saved_audios', req.userId);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -714,14 +802,14 @@ app.delete('/api/settings/audio/:id', async (req, res) => {
     }
     const entry = list.find(a => a.id === id);
     list = list.filter(a => a.id !== id);
-    await db.setSetting('saved_audios', JSON.stringify(list));
+    await db.setSetting('saved_audios', JSON.stringify(list), req.userId);
     if (entry) {
       const fullPath = join(dataDir, normalizeAudioPath(entry.path));
       if (existsSync(fullPath)) unlinkSync(fullPath);
     }
-    const updatedSettings = await db.getAllSettings();
+    const updatedSettings = await db.getAllSettings(req.userId);
     const savedAudios = typeof updatedSettings.saved_audios === 'string' ? JSON.parse(updatedSettings.saved_audios || '[]') : (updatedSettings.saved_audios || []);
-    io.emit('settings_updated', { ...updatedSettings, saved_audios: savedAudios });
+    emitToUser(req.userId, 'settings_updated', { ...updatedSettings, saved_audios: savedAudios });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -732,13 +820,13 @@ app.delete('/api/settings/audio/:id', async (req, res) => {
 app.get('/api/export/logs', async (req, res) => {
   try {
     const { format = 'json' } = req.query;
-    const leads = await db.getAllLeads(null, req.clientId);
+    const leads = await db.getAllLeads(null, req.userId);
     
-    const { whatsapp } = getOrCreateHandler(req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.userId);
     const connectionTime = whatsapp.connectionTime;
     const allMessages = [];
     for (const lead of leads) {
-      let messages = await db.getMessagesByLead(lead.id, req.clientId);
+      let messages = await db.getMessagesByLead(lead.id, req.userId);
       // Filter to only show messages after connection
       if (connectionTime) {
         messages = messages.filter(msg => {
@@ -799,7 +887,7 @@ app.get('/api/export/logs', async (req, res) => {
 app.get('/api/logs', async (req, res) => {
   try {
     const { limit = 20 } = req.query;
-    const logs = await db.getRecentLogs(parseInt(limit), req.clientId);
+    const logs = await db.getRecentLogs(parseInt(limit), req.userId);
     res.json(logs.map(log => {
       try {
         let details = null;

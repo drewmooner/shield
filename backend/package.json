@@ -4,7 +4,9 @@
   "description": "Shield WhatsApp Triage Assistant Backend",
   "main": "server.js",
   "type": "module",
-  "engines": { "node": ">=18 <22" },
+  "engines": {
+    "node": ">=18 <22"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
@@ -13,9 +15,11 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.3",
     "lowdb": "^7.0.1",
     "multer": "^2.0.2",
     "p-queue": "^7.4.1",

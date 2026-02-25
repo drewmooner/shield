@@ -49,6 +49,20 @@ class Database {
     if (this.driver?.clearSessionAuth) return this.driver.clearSessionAuth(sessionName);
   }
 
+  /** Auth (PostgreSQL only). */
+  async createUser(id, email, passwordHash) {
+    if (this.driver?.createUser) return this.driver.createUser(id, email, passwordHash);
+    throw new Error('Auth requires PostgreSQL (DATABASE_URL)');
+  }
+  async getUserByEmail(email) {
+    if (this.driver?.getUserByEmail) return this.driver.getUserByEmail(email);
+    return null;
+  }
+  async getUserById(id) {
+    if (this.driver?.getUserById) return this.driver.getUserById(id);
+    return null;
+  }
+
   async init() {
     await this.db.read();
     
@@ -582,6 +596,12 @@ class Database {
     return this.db.data.bot_logs
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
       .slice(0, limit);
+  }
+
+  /** Prune messages older than N days for all tenants (Postgres only). Always logs deleted count. */
+  async pruneOldMessagesGlobally(olderThanDays = 5) {
+    if (this.driver?.pruneOldMessagesGlobally) return this.driver.pruneOldMessagesGlobally(olderThanDays);
+    return 0;
   }
 
   /** Prune messages older than N days to save space. No-op for JSON DB if days not set; use for Postgres. */
