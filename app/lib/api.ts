@@ -9,10 +9,11 @@ function getApiUrl() {
 
 const API_URL = getApiUrl();
 
-export async function getBotStatus() {
+export async function getBotStatus(options?: { signal?: AbortSignal }) {
   const url = `${API_URL}/bot/status`;
   const res = await fetch(url, {
     cache: 'no-store',
+    signal: options?.signal,
   });
   if (!res.ok) {
     const text = await res.text();

@@ -21,18 +21,23 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const { socket, connected } = useSocketContext();
 
+  // Per-request timeout (fail fast so we can retry sooner)
+  const REQUEST_TIMEOUT_MS = 8000;
+  // Short delays between retries (1s, 2s, 3s) so QR shows sooner when backend is up
+  const retryDelayMs = (attempt: number) => 1000 * (attempt + 1);
+
   const checkStatus = async (retries: number, cancelled: { current: boolean }): Promise<boolean> => {
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (cancelled.current) return false;
       try {
         const ctrl = new AbortController();
-        const id = setTimeout(() => ctrl.abort(), 15000);
+        const id = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
         const res = await fetch(`${API_URL}/bot/status`, { signal: ctrl.signal });
         clearTimeout(id);
         if (cancelled.current) return false;
         if (res.status === 503 || res.status === 502) {
           if (attempt < retries) {
-            await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+            await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
             continue;
           }
         }
@@ -50,7 +55,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
       } catch (err) {
         if (cancelled.current) return false;
         if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
           continue;
         }
         setError('Failed to connect to backend. The service may be starting (wait and retry), or check that the backend URL is correct.');

@@ -8,7 +8,7 @@ import Dashboard from './components/Dashboard';
 import { getBotStatus } from './lib/api';
 import { useSocketContext } from './providers/SocketProvider';
 
-const INITIAL_CHECK_TIMEOUT_MS = 10_000;
+const INITIAL_CHECK_TIMEOUT_MS = 5_000;
 
 export default function Home() {
   const [isConnected, setIsConnected] = useState(false);
@@ -23,14 +23,19 @@ export default function Home() {
     setHasBeenConnected(true);
   }, []);
 
-  // Check connection status on mount (with timeout so we never hang)
+  // Check connection status on mount (short timeout so QR screen shows quickly)
   useEffect(() => {
     let cancelled = false;
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), INITIAL_CHECK_TIMEOUT_MS);
 
     const checkConnection = async () => {
       try {
-        const status = await getBotStatus();
+        const status = await getBotStatus({ signal: ac.signal });
         if (cancelled) return;
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+        clearTimeout(timeoutId);
         const connected = status.status === 'connected' && Boolean(status.isConnected);
         setIsConnected(connected);
         if (connected) setHasBeenConnected(true);
@@ -38,16 +43,21 @@ export default function Home() {
         setIsReconnecting(reconnecting);
       } catch (err) {
         if (!cancelled) {
-          console.error('Error checking connection:', err);
+          if ((err as Error).name !== 'AbortError') console.error('Error checking connection:', err);
           setIsConnected(false);
           setIsReconnecting(false);
         }
       } finally {
-        if (!cancelled) setChecking(false);
+        if (!cancelled) {
+          if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+          setChecking(false);
+        }
       }
     };
 
     timeoutRef.current = setTimeout(() => {
+      ac.abort();
       setChecking((c) => {
         if (c) console.warn('Initial connection check timed out – showing UI');
         return false;
@@ -58,6 +68,8 @@ export default function Home() {
 
     return () => {
       cancelled = true;
+      clearTimeout(timeoutId);
+      ac.abort();
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, []);
