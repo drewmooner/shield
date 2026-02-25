@@ -43,34 +43,34 @@ httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
 });
 
+// Build allowed origins once (Express + Socket.IO use the same list)
+const CORS_ORIGINS = [
+  'http://localhost:3001',
+  'http://localhost:3000',
+  'http://127.0.0.1:3001',
+  'http://127.0.0.1:3000',
+  process.env.FRONTEND_URL,
+  process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
+  ...(process.env.CORS_ALLOWED_ORIGINS ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean) : []),
+  'https://shield-gold.vercel.app',
+].filter(Boolean);
+
+function isOriginAllowed(origin, allowedOrigins) {
+  if (!origin) return true;
+  if (process.env.NODE_ENV !== 'production' || allowedOrigins.length === 0) return true;
+  const normalized = allowedOrigins.map(a => a.replace(/^https?:\/\//, ''));
+  return normalized.some(allowed => origin.replace(/^https?:\/\//, '').includes(allowed) || origin === allowed || allowed === '*');
+}
+
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
   cors: {
     origin: function(origin, callback) {
-      // Allow requests with no origin (mobile apps, Postman, etc.)
-      if (!origin) return callback(null, true);
-      
-      const allowedOrigins = [
-        'http://localhost:3001',
-        'http://localhost:3000',
-        'http://127.0.0.1:3001',
-        'http://127.0.0.1:3000',
-        process.env.FRONTEND_URL,
-        process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
-      ].filter(Boolean);
-      
-      // In development, allow all origins
-      if (process.env.NODE_ENV !== 'production' || allowedOrigins.length === 0) {
+      if (isOriginAllowed(origin, CORS_ORIGINS)) {
         return callback(null, true);
       }
-      
-      // Check if origin is allowed
-      if (allowedOrigins.some(allowed => origin.includes(allowed.replace('https://', '').replace('http://', '')))) {
-        callback(null, true);
-      } else {
-        console.log('⚠️ CORS blocked WebSocket origin:', origin);
-        callback(null, true); // Allow for now - tighten in production
-      }
+      console.log('⚠️ CORS blocked WebSocket origin:', origin);
+      callback(new Error('CORS not allowed'), false);
     },
     credentials: true,
     methods: ['GET', 'POST']
@@ -78,32 +78,14 @@ const io = new Server(httpServer, {
   path: '/socket.io/'
 });
 
-// Middleware
-// CORS configuration for Vercel frontend
-const allowedOrigins = [
-  'http://localhost:3001',
-  'http://localhost:3000',
-  process.env.FRONTEND_URL,
-  process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
-].filter(Boolean);
-
+// Middleware – CORS uses same allowlist as Socket.IO
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true);
-    
-    // In production, check allowed origins; in development, allow all
-    if (process.env.NODE_ENV !== 'production' || allowedOrigins.length === 0) {
+    if (isOriginAllowed(origin, CORS_ORIGINS)) {
       return callback(null, true);
     }
-    
-    if (allowedOrigins.some(allowed => origin.includes(allowed.replace('https://', '').replace('http://', '')))) {
-      callback(null, true);
-    } else {
-      // Log for debugging
-      console.log('CORS blocked origin:', origin);
-      callback(null, true); // Allow for now - tighten in production
-    }
+    console.log('CORS blocked origin:', origin);
+    callback(new Error('CORS not allowed'), false);
   },
   credentials: true
 }));

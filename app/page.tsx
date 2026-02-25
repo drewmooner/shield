@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import QRAuth from './components/QRAuth';
 import Nav from './components/Nav';
 import StatusBar from './components/StatusBar';
@@ -17,6 +17,11 @@ export default function Home() {
   const [checking, setChecking] = useState(true);
   const { socket, connected: socketConnected } = useSocketContext();
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onConnected = useCallback(() => {
+    setIsConnected(true);
+    setHasBeenConnected(true);
+  }, []);
 
   // Check connection status on mount (with timeout so we never hang)
   useEffect(() => {
@@ -95,7 +100,7 @@ export default function Home() {
 
   // Show QR code screen only when not connected and not reconnecting (or never connected yet)
   if (!showDashboard) {
-    return <QRAuth onConnected={() => { setIsConnected(true); setHasBeenConnected(true); }} />;
+    return <QRAuth onConnected={onConnected} />;
   }
 
   // Show dashboard (connected or reconnecting – StatusBar shows reconnecting state)

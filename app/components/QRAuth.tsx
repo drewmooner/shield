@@ -21,32 +21,53 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const { socket, connected } = useSocketContext();
 
-  const checkStatus = async () => {
-    try {
-      const res = await fetch(`${API_URL}/bot/status`);
-      if (!res.ok) {
-        throw new Error(`Backend returned ${res.status}`);
+  const checkStatus = async (retries: number, cancelled: { current: boolean }): Promise<boolean> => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (cancelled.current) return false;
+      try {
+        const ctrl = new AbortController();
+        const id = setTimeout(() => ctrl.abort(), 15000);
+        const res = await fetch(`${API_URL}/bot/status`, { signal: ctrl.signal });
+        clearTimeout(id);
+        if (cancelled.current) return false;
+        if (res.status === 503 || res.status === 502) {
+          if (attempt < retries) {
+            await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+            continue;
+          }
+        }
+        if (!res.ok) {
+          throw new Error(`Backend returned ${res.status}`);
+        }
+        const data = await res.json();
+        if (cancelled.current) return false;
+        setStatus(data);
+        setError(null);
+        if (data.status === 'connected' && data.isConnected) {
+          onConnected();
+        }
+        return true;
+      } catch (err) {
+        if (cancelled.current) return false;
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+          continue;
+        }
+        setError('Failed to connect to backend. The service may be starting (wait and retry), or check that the backend URL is correct.');
+        console.error('Backend connection error:', err);
+        return false;
       }
-      const data = await res.json();
-      console.log('Bot status:', data); // Debug log
-      console.log('Status:', data.status, 'QR:', data.qr ? `Present (${data.qr.substring(0, 20)}...)` : 'Missing', 'isConnected:', data.isConnected);
-      setStatus(data);
-      setError(null);
-
-      if (data.status === 'connected' && data.isConnected) {
-        onConnected();
-      }
-    } catch (err) {
-      setError('Failed to connect to backend. Make sure the backend is running on port 3002.');
-      console.error('Backend connection error:', err);
     }
+    return false;
   };
 
+  // Single status check on mount; ignore results if effect cleaned up (avoids race with old requests)
   useEffect(() => {
-    // Check immediately
-    checkStatus();
-    // Then check again after 500ms for faster initial load
-    setTimeout(checkStatus, 500);
+    const cancelled = { current: false };
+    checkStatus(4, cancelled);
+    return () => {
+      cancelled.current = true;
+    };
   }, [onConnected]);
 
   // Set up WebSocket listener for real-time status updates
@@ -98,6 +119,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
             onClick={() => {
               setError(null);
               setStatus({ status: 'initializing' });
+              checkStatus(4, { current: false });
             }}
             className="px-6 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black rounded-lg hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors"
           >
