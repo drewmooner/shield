@@ -856,8 +856,8 @@ export function emitEvent(eventName, data) {
   io.emit(eventName, data);
 }
 
-// Start server
-httpServer.listen(PORT, () => {
+// Start server (0.0.0.0 so Render/cloud health checks can reach it)
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend running on port ${PORT}`);
   console.log(`📱 WhatsApp connection initializing...`);
   console.log(`🔌 WebSocket server ready`);
