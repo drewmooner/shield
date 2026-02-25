@@ -35,6 +35,14 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
+// Bind immediately so Render/cloud sees the port open (before DB/WhatsApp init)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
+});
+
 // Initialize Socket.IO with CORS
 const io = new Server(httpServer, {
   cors: {
@@ -160,11 +168,6 @@ whatsapp.initialize().catch((error) => {
 });
 
 // API Routes
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
 
 // Debug endpoint to check WhatsApp listener status
 app.get('/api/debug/listeners', async (req, res) => {
@@ -855,13 +858,6 @@ io.on('connection', (socket) => {
 export function emitEvent(eventName, data) {
   io.emit(eventName, data);
 }
-
-// Start server (0.0.0.0 so Render/cloud health checks can reach it)
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Shield Backend running on port ${PORT}`);
-  console.log(`📱 WhatsApp connection initializing...`);
-  console.log(`🔌 WebSocket server ready`);
-});
 
 // Handle port already in use error
 httpServer.on('error', (error) => {
