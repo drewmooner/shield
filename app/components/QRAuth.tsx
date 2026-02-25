@@ -201,7 +201,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
               try {
                 await reconnectBot();
                 setError(null);
-                checkStatus(MAX_RETRIES, cancelledRef).catch(() => {});
+                checkStatus(4, cancelledRef).catch(() => {});
               } catch (err) {
                 console.error(err);
               }
