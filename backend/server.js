@@ -92,61 +92,82 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static(join(__dirname, '../public')));
 
+// Client ID: from header (X-Client-Id) or query (clientId); default 'default' for backward compat
+const CLIENT_ID_HEADER = 'x-client-id';
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isValidClientId(id) {
+  return typeof id === 'string' && (id === 'default' || UUID_REGEX.test(id));
+}
+function getClientIdFromRequest(req) {
+  const id = (req.headers[CLIENT_ID_HEADER] || req.query?.clientId || '').trim();
+  return isValidClientId(id) ? id : 'default';
+}
+app.use((req, res, next) => {
+  req.clientId = getClientIdFromRequest(req);
+  next();
+});
+
+// GET /api/client/id – return existing clientId from header or generate new one (for frontend to store)
+app.get('/api/client/id', (req, res) => {
+  const fromHeader = (req.headers[CLIENT_ID_HEADER] || '').trim();
+  const clientId = isValidClientId(fromHeader) ? fromHeader : randomUUID();
+  res.json({ clientId });
+});
+
 // Initialize database (PostgreSQL when DATABASE_URL set, else JSON file)
 const db = process.env.DATABASE_URL
   ? new Database({ databaseUrl: process.env.DATABASE_URL })
   : new Database(process.env.DB_PATH || 'shield.json');
-const whatsapp = new WhatsAppHandler(db);
 
-// Prune old messages on startup to save space (env: PRUNE_MESSAGES_OLDER_THAN_DAYS, default 5)
-const pruneDays = parseInt(process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS || '5', 10);
-if (Number.isFinite(pruneDays) && pruneDays > 0) {
-  db.pruneOldMessages(pruneDays).catch((err) => console.warn('Prune on startup:', err.message));
+// Per-client WhatsApp handlers (clientId -> { whatsapp, state }); state.connectionStatus is mutable
+const clientHandlers = new Map();
+function getOrCreateHandler(clientId) {
+  if (clientHandlers.has(clientId)) return clientHandlers.get(clientId);
+  const state = { connectionStatus: { status: 'initializing', timestamp: new Date().toISOString() } };
+  const whatsapp = new WhatsAppHandler(db, { sessionName: clientId, clientId });
+  whatsapp.setIO(io);
+  whatsapp.setStatusCallback((status) => {
+    const existingQr = state.connectionStatus.qr;
+    const newQr = status.qr;
+    state.connectionStatus = {
+      ...status,
+      timestamp: new Date().toISOString(),
+      connectionTime: whatsapp.connectionTime || status.connectionTime || null,
+      qr: newQr || existingQr
+    };
+    io.to(`client:${clientId}`).emit('status_update', state.connectionStatus);
+  });
+  whatsapp.setEventEmitter((eventName, data) => {
+    try {
+      io.to(`client:${clientId}`).emit(eventName, data);
+    } catch (error) {
+      console.error(`❌ Error emitting ${eventName} to client ${clientId}:`, error);
+    }
+  });
+  whatsapp.initialize().catch((error) => {
+    console.error(`❌ Failed to initialize WhatsApp for client ${clientId}:`, error);
+    state.connectionStatus = { status: 'error', error: error.message, timestamp: new Date().toISOString() };
+  });
+  clientHandlers.set(clientId, { whatsapp, state });
+  return clientHandlers.get(clientId);
 }
 
-// Set up WebSocket event emitter for WhatsApp handler
-// Pass io directly for more reliable event emission
-whatsapp.setIO(io);
-whatsapp.setEventEmitter((eventName, data) => {
-  try {
-    console.log(`📡 Emitting WebSocket event: ${eventName}`);
-    io.emit(eventName, data);
-    console.log(`✅ WebSocket event ${eventName} emitted successfully`);
-  } catch (error) {
-    console.error(`❌ Error emitting WebSocket event ${eventName}:`, error);
-  }
-});
+// Prune old messages on startup (single db for now)
+const pruneDays = parseInt(process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS || '5', 10);
+if (Number.isFinite(pruneDays) && pruneDays > 0) {
+  db.pruneOldMessages(pruneDays, 'default').catch((err) => console.warn('Prune on startup:', err.message));
+}
 
-// Status tracking
-let connectionStatus = { status: 'initializing', timestamp: new Date().toISOString() };
-
-whatsapp.setStatusCallback((status) => {
-  // Preserve QR code if it exists in new status or keep existing one
-  const existingQr = connectionStatus.qr;
-  const newQr = status.qr;
-  connectionStatus = { 
-    ...status, 
-    timestamp: new Date().toISOString(),
-    // Include connectionTime from WhatsApp handler if available
-    connectionTime: whatsapp.connectionTime || status.connectionTime || null,
-    // Keep QR if new status has it, otherwise preserve existing
-    qr: newQr || existingQr
-  };
-  
-  // Emit status update via WebSocket
-  io.emit('status_update', connectionStatus);
-});
-
-// Initialize WhatsApp connection
-whatsapp.initialize().catch((error) => {
-  console.error('❌ Failed to initialize WhatsApp:', error);
-  console.error('Stack:', error.stack);
-  // Update connection status to error
-  connectionStatus = {
-    status: 'error',
-    error: error.message,
-    timestamp: new Date().toISOString()
-  };
+// Socket.IO: join each socket to its client room; send that client's initial status
+io.on('connection', (socket) => {
+  const clientId = socket.handshake.auth?.clientId || socket.handshake.query?.clientId || 'default';
+  const cid = isValidClientId(clientId) ? clientId : 'default';
+  socket.join(`client:${cid}`);
+  const handler = getOrCreateHandler(cid);
+  socket.emit('status_update', handler.state.connectionStatus);
+  socket.on('disconnect', (reason) => {
+    console.log(`❌ Client disconnected: ${socket.id} (reason: ${reason})`);
+  });
 });
 
 // API Routes
@@ -154,6 +175,7 @@ whatsapp.initialize().catch((error) => {
 // Debug endpoint to check WhatsApp listener status
 app.get('/api/debug/listeners', async (req, res) => {
   try {
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const status = whatsapp.getStatus();
     
     // Safely access socket properties
@@ -249,6 +271,7 @@ app.get('/api/test-messages', async (req, res) => {
 // Refresh all contact names directly from WhatsApp
 app.post('/api/contacts/refresh', async (req, res) => {
   try {
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const result = await whatsapp.refreshAllContactNames();
     res.json(result);
   } catch (error) {
@@ -259,19 +282,20 @@ app.post('/api/contacts/refresh', async (req, res) => {
 // Bot status
 app.get('/api/bot/status', async (req, res) => {
   try {
+    const handler = getOrCreateHandler(req.clientId);
+    const { whatsapp, state } = handler;
+    const connectionStatus = state.connectionStatus;
     let status = { status: 'initializing', isConnected: false };
     try {
       status = whatsapp.getStatus();
     } catch (statusError) {
       console.error('Error getting WhatsApp status:', statusError);
-      console.error('Stack:', statusError.stack);
-      // Use connectionStatus as fallback
       status = connectionStatus;
     }
     
     let logs = [];
     try {
-      logs = await db.getRecentLogs(20);
+      logs = await db.getRecentLogs(20, req.clientId);
     } catch (logError) {
       console.error('Error fetching logs:', logError);
       logs = [];
@@ -279,16 +303,13 @@ app.get('/api/bot/status', async (req, res) => {
     
     let botPaused = 'false';
     try {
-      botPaused = await db.getSetting('bot_paused') || 'false';
+      botPaused = await db.getSetting('bot_paused', req.clientId) || 'false';
     } catch (settingError) {
       console.error('Error fetching bot_paused setting:', settingError);
     }
     
-    // Merge connectionStatus with whatsapp status, prioritizing connectionStatus for QR
-    // Ensure QR is preserved from either source
     const qr = connectionStatus.qr || status.qr;
     
-    // Safely serialize the response, removing any non-serializable data
     const response = {
       status: connectionStatus.status || status.status || 'initializing',
       isConnected: status.isConnected || false,
@@ -355,26 +376,25 @@ app.get('/api/bot/status', async (req, res) => {
   }
 });
 
-// Pause/Resume bot
+// Pause/Resume bot (scoped to this client's handler; emit to this client only)
 app.post('/api/bot/pause', async (req, res) => {
-  await db.setSetting('bot_paused', 'true');
-  await db.addLog('bot_paused', { timestamp: new Date().toISOString() });
-  // Emit WebSocket event
-  io.emit('bot_status_changed', { bot_paused: 'true' });
+  await db.setSetting('bot_paused', 'true', req.clientId);
+  await db.addLog('bot_paused', { timestamp: new Date().toISOString() }, req.clientId);
+  io.to(`client:${req.clientId}`).emit('bot_status_changed', { bot_paused: 'true' });
   res.json({ success: true, paused: true });
 });
 
 app.post('/api/bot/resume', async (req, res) => {
-  await db.setSetting('bot_paused', 'false');
-  await db.addLog('bot_resumed', { timestamp: new Date().toISOString() });
-  // Emit WebSocket event
-  io.emit('bot_status_changed', { bot_paused: 'false' });
+  await db.setSetting('bot_paused', 'false', req.clientId);
+  await db.addLog('bot_resumed', { timestamp: new Date().toISOString() }, req.clientId);
+  io.to(`client:${req.clientId}`).emit('bot_status_changed', { bot_paused: 'false' });
   res.json({ success: true, paused: false });
 });
 
 // Reconnect
 app.post('/api/bot/reconnect', async (req, res) => {
   try {
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     await whatsapp.reconnect();
     res.json({ success: true, message: 'Reconnection initiated' });
   } catch (error) {
@@ -385,6 +405,7 @@ app.post('/api/bot/reconnect', async (req, res) => {
 // Disconnect
 app.post('/api/bot/disconnect', async (req, res) => {
   try {
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     await whatsapp.disconnect();
     res.json({ success: true, message: 'Disconnected successfully' });
   } catch (error) {
@@ -401,14 +422,12 @@ app.get('/api/leads', async (req, res) => {
     res.setHeader('Expires', '0');
     
     const { status } = req.query;
-    const leads = await db.getAllLeads(status || null);
-    
-    // Get last message and contact name for each lead
-    // Only show messages after connection time
+    const leads = await db.getAllLeads(status || null, req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const connectionTime = whatsapp.connectionTime;
     const leadsWithMessages = await Promise.all(
       leads.map(async (lead) => {
-        let messages = await db.getMessagesByLead(lead.id);
+let messages = await db.getMessagesByLead(lead.id, req.clientId);
         // Filter to only show messages after connection
         if (connectionTime) {
           messages = messages.filter(msg => {
@@ -417,7 +436,7 @@ app.get('/api/leads', async (req, res) => {
           });
         }
         const lastMessage = messages[messages.length - 1] || null;
-        
+
         // Use cached contact info from database (faster - no WhatsApp API calls)
         // Contact info is already fetched and stored when chats are loaded
         const contactName = lead.contact_name || lead.phone_number;
@@ -451,7 +470,7 @@ app.get('/api/leads/:id', async (req, res) => {
     res.setHeader('Expires', '0');
     
     const leadId = req.params.id;
-    const lead = await db.getLead(leadId);
+    const lead = await db.getLead(leadId, req.clientId);
     if (!lead) {
       console.log(`❌ Lead not found: ${leadId}`);
       // Check if lead exists with different ID (might be a normalization issue)
@@ -465,7 +484,8 @@ app.get('/api/leads/:id', async (req, res) => {
     // console.log(`✅ Lead found: ${lead.phone_number}`);
     
     // Only return messages created after connection time (filter old messages)
-    let messages = await db.getMessagesByLead(lead.id);
+    let messages = await db.getMessagesByLead(lead.id, req.clientId);
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const connectionTime = whatsapp.connectionTime;
     if (connectionTime) {
       // Filter to only show messages after connection was established
@@ -493,10 +513,10 @@ app.get('/api/leads/:id', async (req, res) => {
 // Mark lead as completed
 app.post('/api/leads/:id/complete', async (req, res) => {
   try {
-    await db.updateLeadStatus(req.params.id, 'completed');
-    await db.addLog('lead_completed', { leadId: req.params.id });
+    await db.updateLeadStatus(req.params.id, 'completed', req.clientId);
+    await db.addLog('lead_completed', { leadId: req.params.id }, req.clientId);
     // Emit WebSocket event
-    const lead = await db.getLead(req.params.id);
+    const lead = await db.getLead(req.params.id, req.clientId);
     if (lead) {
       io.emit('lead_updated', lead);
       io.emit('leads_changed');
@@ -510,8 +530,8 @@ app.post('/api/leads/:id/complete', async (req, res) => {
 // Delete lead and all messages
 app.delete('/api/leads/:id', async (req, res) => {
   try {
-    await db.deleteLead(req.params.id);
-    await db.addLog('lead_deleted', { leadId: req.params.id });
+    await db.deleteLead(req.params.id, req.clientId);
+    await db.addLog('lead_deleted', { leadId: req.params.id }, req.clientId);
     // Emit WebSocket event
     io.emit('lead_deleted', { id: req.params.id });
     io.emit('leads_changed');
@@ -525,7 +545,7 @@ app.delete('/api/leads/:id', async (req, res) => {
 app.post('/api/messages/clear', async (req, res) => {
   try {
     console.log('🧹 Clearing all leads and messages...');
-    const result = await db.clearAll();
+    const result = await db.clearAll(req.clientId);
     console.log(`✅ Cleared ${result.leadCount} leads and ${result.messageCount} messages`);
     res.json({ success: true, ...result });
   } catch (error) {
@@ -542,7 +562,7 @@ app.post('/api/messages/send', async (req, res) => {
       return res.status(400).json({ error: 'phoneNumber and message are required' });
     }
 
-    // Pass io directly to sendManualMessage so it can emit events reliably
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const result = await whatsapp.sendManualMessage(phoneNumber, message, io, leadId || null);
     res.json(result);
   } catch (error) {
@@ -554,8 +574,8 @@ app.post('/api/messages/send', async (req, res) => {
 // Get settings
 app.get('/api/settings', async (req, res) => {
   try {
-    const settings = await db.getAllSettings();
-    const productInfo = await db.getProductInfo();
+    const settings = await db.getAllSettings(req.clientId);
+    const productInfo = await db.getProductInfo(req.clientId);
     
     const { openrouter_api_key, ai_model, ...safeSettings } = settings;
     if (typeof safeSettings.keyword_replies === 'string') {
@@ -586,25 +606,25 @@ app.post('/api/settings', async (req, res) => {
     const { product_info, keyword_replies, ...otherSettings } = req.body;
 
     if (product_info !== undefined) {
-      await db.setProductInfo(product_info);
+      await db.setProductInfo(product_info, req.clientId);
     }
 
     if (keyword_replies !== undefined) {
       const value = Array.isArray(keyword_replies) ? JSON.stringify(keyword_replies) : (typeof keyword_replies === 'string' ? keyword_replies : JSON.stringify([]));
-      await db.setSetting('keyword_replies', value);
+      await db.setSetting('keyword_replies', value, req.clientId);
     }
 
     for (const [key, value] of Object.entries(otherSettings)) {
       if (value !== undefined) {
-        await db.setSetting(key, typeof value === 'object' ? JSON.stringify(value) : String(value));
+        await db.setSetting(key, typeof value === 'object' ? JSON.stringify(value) : String(value), req.clientId);
       }
     }
 
-    await db.addLog('settings_updated', { timestamp: new Date().toISOString() });
+    await db.addLog('settings_updated', { timestamp: new Date().toISOString() }, req.clientId);
     
     // Emit WebSocket event for settings update
-    const updatedSettings = await db.getAllSettings();
-    const updatedProductInfo = await db.getProductInfo();
+    const updatedSettings = await db.getAllSettings(req.clientId);
+    const updatedProductInfo = await db.getProductInfo(req.clientId);
     io.emit('settings_updated', { 
       ...updatedSettings, 
       product_info: updatedProductInfo 
@@ -627,7 +647,7 @@ app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) =>
     if (!req.file) return res.status(400).json({ error: 'No audio file' });
     const id = req.audioId || req.file.filename.split('.')[0];
     const relativePath = normalizeAudioPath(join('audio', req.file.filename));
-    const raw = await db.getSetting('saved_audios');
+    const raw = await db.getSetting('saved_audios', req.clientId);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -635,8 +655,8 @@ app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) =>
       list = [];
     }
     list.push({ id, path: relativePath });
-    await db.setSetting('saved_audios', JSON.stringify(list));
-    const updatedSettings = await db.getAllSettings();
+    await db.setSetting('saved_audios', JSON.stringify(list), req.clientId);
+    const updatedSettings = await db.getAllSettings(req.clientId);
     const savedAudios = typeof updatedSettings.saved_audios === 'string' ? JSON.parse(updatedSettings.saved_audios || '[]') : (updatedSettings.saved_audios || []);
     io.emit('settings_updated', { ...updatedSettings, saved_audios: savedAudios });
     res.json({ success: true, id, path: relativePath });
@@ -656,7 +676,7 @@ app.get('/api/settings/audio/file', async (req, res) => {
     let list = [];
 
     if (id) {
-      const raw = await db.getSetting('saved_audios');
+      const raw = await db.getSetting('saved_audios', req.clientId);
       try {
         list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
       } catch {
@@ -666,7 +686,7 @@ app.get('/api/settings/audio/file', async (req, res) => {
       if (!entry) return res.status(404).json({ error: 'No audio' });
       fullPath = join(dataDir, normalizeAudioPath(entry.path));
     } else {
-      const legacyPath = await db.getSetting('welcome_audio_path');
+      const legacyPath = await db.getSetting('welcome_audio_path', req.clientId);
       if (legacyPath) fullPath = join(dataDir, normalizeAudioPath(legacyPath));
     }
 
@@ -685,7 +705,7 @@ app.delete('/api/settings/audio/:id', async (req, res) => {
   try {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    const raw = await db.getSetting('saved_audios');
+    const raw = await db.getSetting('saved_audios', req.clientId);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -712,13 +732,13 @@ app.delete('/api/settings/audio/:id', async (req, res) => {
 app.get('/api/export/logs', async (req, res) => {
   try {
     const { format = 'json' } = req.query;
-    const leads = await db.getAllLeads();
+    const leads = await db.getAllLeads(null, req.clientId);
     
-    // Get all messages for all leads (only after connection time)
+    const { whatsapp } = getOrCreateHandler(req.clientId);
     const connectionTime = whatsapp.connectionTime;
     const allMessages = [];
     for (const lead of leads) {
-      let messages = await db.getMessagesByLead(lead.id);
+      let messages = await db.getMessagesByLead(lead.id, req.clientId);
       // Filter to only show messages after connection
       if (connectionTime) {
         messages = messages.filter(msg => {
@@ -779,7 +799,7 @@ app.get('/api/export/logs', async (req, res) => {
 app.get('/api/logs', async (req, res) => {
   try {
     const { limit = 20 } = req.query;
-    const logs = await db.getRecentLogs(parseInt(limit));
+    const logs = await db.getRecentLogs(parseInt(limit), req.clientId);
     res.json(logs.map(log => {
       try {
         let details = null;
@@ -816,25 +836,6 @@ app.get('/api/logs', async (req, res) => {
 });
 
 // Note: Log events are emitted directly from whatsapp.js and API endpoints
-
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('✅ Client connected via WebSocket:', socket.id);
-  console.log('   Origin:', socket.handshake.headers.origin || 'unknown');
-  console.log('   Total connected clients:', io.sockets.sockets.size);
-  
-  // Send initial status on connection
-  socket.emit('status_update', connectionStatus);
-  
-  socket.on('disconnect', (reason) => {
-    console.log(`❌ Client disconnected: ${socket.id} (reason: ${reason})`);
-    console.log('   Remaining connected clients:', io.sockets.sockets.size);
-  });
-  
-  socket.on('error', (error) => {
-    console.error(`❌ Socket error for ${socket.id}:`, error);
-  });
-});
 
 // Helper function to emit events
 export function emitEvent(eventName, data) {

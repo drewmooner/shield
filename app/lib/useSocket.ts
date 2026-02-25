@@ -2,37 +2,36 @@
 
 import { useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { ensureClientId } from './api';
 
 let globalSocket: Socket | null = null;
 let connectionCount = 0;
+let globalClientId: string | null = null;
 
 function getSocketUrl(): string {
-  if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_API_URL?.replace(/\/api\/?$/, '') || 'http://localhost:3002';
-  }
-
+  // Use same backend as API (Render when NEXT_PUBLIC_API_URL is set on Vercel)
   const apiUrl = process.env.NEXT_PUBLIC_API_URL;
   if (apiUrl && !apiUrl.startsWith('/')) {
     return apiUrl.replace(/\/api\/?$/, '');
   }
-
-  // Connect directly to backend - rewrites can fail with Socket.IO polling
-  const host = window.location.hostname;
-  const port = 3002;
-  return `http://${host}:${port}`;
+  if (typeof window === 'undefined') {
+    return 'http://localhost:3002';
+  }
+  return `${window.location.origin}/api`.replace(/\/api\/?$/, '') || 'http://localhost:3002';
 }
 
-function getOrCreateSocket(): Socket {
-  if (globalSocket) {
-    console.log('♻️ Reusing existing socket:', globalSocket.id);
+function getOrCreateSocket(clientId: string): Socket {
+  if (globalSocket && globalClientId === clientId) {
     return globalSocket;
   }
-
+  if (globalSocket) {
+    globalSocket.close();
+    globalSocket = null;
+  }
+  globalClientId = clientId;
   const url = getSocketUrl();
-  console.log('🔌 Creating Socket.IO connection (polling) to:', url);
-
   globalSocket = io(url, {
-    // ✅ Use polling only (more reliable, was working perfectly before)
+    auth: { clientId },
     transports: ['polling'],
     reconnection: true,
     reconnectionDelay: 1000,
@@ -42,7 +41,7 @@ function getOrCreateSocket(): Socket {
     autoConnect: true,
     timeout: 20000,
     forceNew: false,
-    upgrade: false, // Disable upgrade to websocket
+    upgrade: false,
   });
 
   globalSocket.on('connect', () => {
@@ -55,28 +54,29 @@ function getOrCreateSocket(): Socket {
 
   let errorLogged = false;
   globalSocket.on('connect_error', (error) => {
-    // Only log error once to reduce spam
     if (!errorLogged) {
       console.error('❌ Socket.IO connection error:', error.message);
-      console.error('   💡 Backend not running? Start it with: cd backend && npm start');
       errorLogged = true;
     }
   });
-  
   globalSocket.on('connect', () => {
-    errorLogged = false; // Reset on successful connection
+    errorLogged = false;
   });
 
   return globalSocket;
 }
 
 export function useSocket(consumerName: string = 'Unknown') {
-  const [connected, setConnected] = useState<boolean>(
-    () => globalSocket?.connected ?? false
-  );
+  const [clientId, setClientId] = useState<string | null>(null);
+  const [connected, setConnected] = useState<boolean>(false);
 
   useEffect(() => {
-    const socket = getOrCreateSocket();
+    ensureClientId().then(setClientId);
+  }, []);
+
+  useEffect(() => {
+    if (!clientId) return;
+    const socket = getOrCreateSocket(clientId);
     connectionCount++;
     setConnected(socket.connected);
 
@@ -90,14 +90,17 @@ export function useSocket(consumerName: string = 'Unknown') {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       connectionCount--;
-
       if (connectionCount <= 0) {
         globalSocket?.close();
         globalSocket = null;
+        globalClientId = null;
         connectionCount = 0;
       }
     };
-  }, [consumerName]);
+  }, [clientId, consumerName]);
 
-  return { socket: globalSocket ?? getOrCreateSocket(), connected };
+  return {
+    socket: clientId ? getOrCreateSocket(clientId) : null,
+    connected,
+  };
 }

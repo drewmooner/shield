@@ -14,8 +14,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 class WhatsAppHandler {
-  constructor(database) {
+  constructor(database, options = {}) {
     this.database = database;
+    this.clientId = options.clientId ?? null;
+    this.cid = this.clientId ?? 'default';
+    this.sessionPath = process.env.SESSION_PATH || './sessions';
+    this.sessionName = options.sessionName ?? process.env.SESSION_NAME ?? 'shield-session';
+    this.fullSessionPath = join(__dirname, this.sessionPath, this.sessionName);
     this.sock = null;
     this.isConnected = false;
     this.isConnecting = false;
@@ -99,7 +104,7 @@ class WhatsAppHandler {
       this.onStatusChange(this.currentStatus);
     }
     
-    await this.database.addLog(`status_${status}`, details);
+    await this.database.addLog(`status_${status}`, details, this.cid);
   }
 
   /**
@@ -151,10 +156,7 @@ class WhatsAppHandler {
 
     this.isConnecting = true;
 
-    // Setup session paths
-    this.sessionPath = process.env.SESSION_PATH || './sessions';
-    this.sessionName = process.env.SESSION_NAME || 'shield-session';
-    this.fullSessionPath = join(__dirname, this.sessionPath, this.sessionName);
+    // Session paths set in constructor (per-client when options.sessionName provided)
 
     console.log('\n═══════════════════════════════════════');
     console.log('🚀 Starting WhatsApp initialization...');
@@ -315,9 +317,9 @@ class WhatsAppHandler {
         if (connection === 'open') {
           this.skipContactLeadCreationUntil = Date.now() + 60000; // Prevent contacts from repopulating
           try {
-            const { leadCount, messageCount } = await this.database.clearAll();
+            const { leadCount, messageCount } = await this.database.clearAll(this.cid);
             console.log(`   🧹 Cleared ${leadCount} leads, ${messageCount} messages - fresh start`);
-            this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount });
+            this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount }, this.cid);
             if (this.io) {
               this.io.emit('leads_changed');
               this.io.emit('data_cleared'); // So UI can clear local state and show empty
@@ -896,7 +898,7 @@ class WhatsAppHandler {
         if (msg.key.fromMe && msg.key?.id) {
           const pinnedLeadId = this.sentMessageLeadMap.get(msg.key.id);
           if (pinnedLeadId) {
-            pinnedLead = await this.database.getLead(pinnedLeadId);
+            pinnedLead = await this.database.getLead(pinnedLeadId, this.cid);
             this.sentMessageLeadMap.delete(msg.key.id);
             if (pinnedLead) {
               console.log(`   📌 fromMe upsert pinned to lead ${pinnedLead.id} via msgId ${msg.key.id}`);
@@ -906,7 +908,7 @@ class WhatsAppHandler {
 
         // Find or create lead. On incoming: scan for same-contact leads and merge into one (fixes outgoing duplicate).
         const normalizedJid = this.database.normalizeJid(jid) || this.database.getCanonicalJid(normalizedPhone);
-        const allForContact = await this.database.findAllLeadsForContact(normalizedPhone, normalizedJid);
+        const allForContact = await this.database.findAllLeadsForContact(normalizedPhone, normalizedJid, this.cid);
         let lead = null;
         let didMerge = false;
 
@@ -914,7 +916,7 @@ class WhatsAppHandler {
           // Always merge duplicates; if we have a pinnedLead from sendManualMessage, prefer it as primary
           const fromJid = allForContact.find(l => l.jid && this.database.normalizeJid(l.jid) === normalizedJid);
           const preferredId = pinnedLead?.id || fromJid?.id || null;
-          lead = await this.database.mergeLeads(allForContact, preferredId);
+          lead = await this.database.mergeLeads(allForContact, preferredId, this.cid);
           didMerge = true;
           if (normalizedJid) { lead.jid = normalizedJid; lead.updated_at = new Date().toISOString(); }
           if (normalizedPhone) { lead.phone_number = normalizedPhone; lead.updated_at = new Date().toISOString(); }
@@ -928,12 +930,12 @@ class WhatsAppHandler {
         }
 
         if (!lead) {
-          lead = await this.database.getLeadByPhone(normalizedPhone);
-          if (!lead) lead = await this.database.getLeadByJid(jid);
+          lead = await this.database.getLeadByPhone(normalizedPhone, this.cid);
+          if (!lead) lead = await this.database.getLeadByJid(jid, this.cid);
         }
         if (!lead) {
           console.log(`   👤 Creating new lead for phone: ${normalizedPhone} (JID: ${normalizedJid})`);
-          lead = await this.database.createLead(normalizedPhone, pushName, null, normalizedJid);
+          lead = await this.database.createLead(normalizedPhone, pushName, null, normalizedJid, this.cid);
           console.log(`   ✅ Created lead: ${lead.id} (phone: ${lead.phone_number}, JID: ${lead.jid})`);
         } else if (!didMerge) {
           console.log(`   ✅ Found existing lead: ${lead.id} (phone: ${lead.phone_number}, JID: ${lead.jid})`);
@@ -998,7 +1000,7 @@ class WhatsAppHandler {
                 if (picUrl) {
                   console.log(`   🖼️ Fetched profile picture directly from WhatsApp for ${normalizedPhone}`);
                   const cj = this.database.getCanonicalJid(lead.phone_number, lead.jid || jid);
-                  this.database.updateLeadContactInfo(lead.id, contactName || lead.contact_name, picUrl, cj);
+                  this.database.updateLeadContactInfo(lead.id, contactName || lead.contact_name, picUrl, cj, this.cid);
                 }
               }).catch(() => {
                 // Profile picture not available, skip
@@ -1007,9 +1009,9 @@ class WhatsAppHandler {
             
             const jidToStore = normalizedJid || this.database.getCanonicalJid(normalizedPhone);
             if (needsUpdate || (jidToStore && lead.jid !== jidToStore)) {
-              await this.database.updateLeadContactInfo(lead.id, contactName || lead.contact_name, profilePictureUrl, jidToStore);
+              await this.database.updateLeadContactInfo(lead.id, contactName || lead.contact_name, profilePictureUrl, jidToStore, this.cid);
               // Refresh lead to get updated data
-              lead = await this.database.getLead(lead.id);
+              lead = await this.database.getLead(lead.id, this.cid);
               console.log(`   ✅ Updated lead ${lead.id} with contact info (Name: "${lead.contact_name}", Phone: ${normalizedPhone}, JID: ${jid})`);
             }
           } catch (infoError) {
@@ -1019,7 +1021,7 @@ class WhatsAppHandler {
         }
 
         // Check if message already exists (prevent duplicates)
-        const existingMessages = await this.database.getMessagesByLead(lead.id);
+        const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
         const msgTimestamp = msg.messageTimestamp 
           ? new Date(msg.messageTimestamp * 1000).toISOString()
           : new Date().toISOString();
@@ -1054,14 +1056,15 @@ class WhatsAppHandler {
           sender, 
           messageText, 
           sender === 'shield' ? 'replied' : 'pending',
-          msgTimestamp // Pass message timestamp to update lead's updated_at
+          msgTimestamp, // Pass message timestamp to update lead's updated_at
+          this.cid
         );
         
         storedCount++;
         console.log(`   ✅ Message stored successfully!`);
 
         // Always refresh lead to get latest data (including contact info) before emitting WebSocket event
-        const updatedLead = await this.database.getLead(lead.id);
+        const updatedLead = await this.database.getLead(lead.id, this.cid);
         console.log(`   📋 Lead data: ${updatedLead.contact_name || updatedLead.phone_number} (${updatedLead.phone_number})`);
         console.log(`   📋 Lead JID: ${updatedLead.jid || 'none'}`);
 
@@ -1112,20 +1115,20 @@ class WhatsAppHandler {
         const isRecentMessage = true; // Message already passed timestamp filtering
         
         if (isRecentMessage && sender === 'user') {
-          const autoReplyEnabled = await this.database.getSetting('auto_reply_enabled') === 'true';
-          const botPaused = await this.database.getSetting('bot_paused') === 'true';
+          const autoReplyEnabled = await this.database.getSetting('auto_reply_enabled', this.cid) === 'true';
+          const botPaused = await this.database.getSetting('bot_paused', this.cid) === 'true';
 
           if (autoReplyEnabled && !botPaused) {
             const keywordReply = await this.getKeywordReply(messageText);
             if (keywordReply) {
               this.messageQueue.add(async () => { await this.sendKeywordReply(lead, phoneNumber, keywordReply, msg.key); });
-              await this.database.addLog('message_received', { phoneNumber, leadId: lead.id });
+              await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
               continue;
             }
             // No keyword match: do not send any message (no AI, no acknowledgement)
           }
 
-          await this.database.addLog('message_received', { phoneNumber, leadId: lead.id });
+          await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
         }
 
       } catch (error) {
@@ -1168,7 +1171,7 @@ class WhatsAppHandler {
   }
 
   async getKeywordReply(text) {
-    const raw = await this.database.getSetting('keyword_replies');
+    const raw = await this.database.getSetting('keyword_replies', this.cid);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -1193,15 +1196,15 @@ class WhatsAppHandler {
     const normalizedJid = jidNormalizedUser(sendJid);
 
     // 1) View delay: wait before marking as read (human-like: don't view instantly)
-    const viewMin = parseInt(await this.database.getSetting('view_delay_min_seconds') || '1');
-    const viewMax = parseInt(await this.database.getSetting('view_delay_max_seconds') || '5');
+    const viewMin = parseInt(await this.database.getSetting('view_delay_min_seconds', this.cid) || '1');
+    const viewMax = parseInt(await this.database.getSetting('view_delay_max_seconds', this.cid) || '5');
     const viewDelay = Math.max(0, Math.floor(Math.random() * (Math.max(viewMax - viewMin, 0) + 1)) + viewMin);
     await new Promise(r => setTimeout(r, viewDelay * 1000));
     if (messageKey) await this.sendReadReceipt(messageKey);
 
     // 2) Reply delay: wait before replying (existing human-like delay)
-    const minDelay = parseInt(await this.database.getSetting('min_delay_seconds') || '3');
-    const maxDelay = parseInt(await this.database.getSetting('max_delay_seconds') || '10');
+    const minDelay = parseInt(await this.database.getSetting('min_delay_seconds', this.cid) || '3');
+    const maxDelay = parseInt(await this.database.getSetting('max_delay_seconds', this.cid) || '10');
     const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
     await new Promise(r => setTimeout(r, delay * 1000));
 
@@ -1210,7 +1213,7 @@ class WhatsAppHandler {
     // 3) Presence indicator before sending:
     // - text => "typing..."
     // - audio => "recording audio..." (gray WhatsApp-style)
-    const typingEnabled = (await this.database.getSetting('typing_indicator_enabled') || 'true') === 'true';
+    const typingEnabled = (await this.database.getSetting('typing_indicator_enabled', this.cid) || 'true') === 'true';
     if (typingEnabled && this.sock) {
       try {
         await this.sock.sendPresenceUpdate(isAudio ? 'recording' : 'composing', normalizedJid);
@@ -1249,19 +1252,19 @@ class WhatsAppHandler {
     }
     const timestamp = new Date().toISOString();
     const content = isAudio ? '[Audio]' : (reply.message || '');
-    const savedMessage = await this.database.createMessage(lead.id, 'shield', content, 'replied', timestamp);
-    await this.database.incrementReplyCount(lead.id);
-    const updatedLead = await this.database.getLead(lead.id);
+    const savedMessage = await this.database.createMessage(lead.id, 'shield', content, 'replied', timestamp, this.cid);
+    await this.database.incrementReplyCount(lead.id, this.cid);
+    const updatedLead = await this.database.getLead(lead.id, this.cid);
     if (this.io) {
       this.io.emit('new_message', { leadId: lead.id, message: { id: savedMessage.id, lead_id: lead.id, sender: 'shield', content, status: 'replied', timestamp: savedMessage.timestamp }, lead: updatedLead });
       this.io.emit('leads_changed');
     }
-    await this.database.addLog('keyword_reply_sent', { phoneNumber, leadId: lead.id, type: isAudio ? 'audio' : 'text' });
+    await this.database.addLog('keyword_reply_sent', { phoneNumber, leadId: lead.id, type: isAudio ? 'audio' : 'text' }, this.cid);
   }
 
   async getAudioPathById(audioId) {
     if (!audioId) return null;
-    const raw = await this.database.getSetting('saved_audios');
+    const raw = await this.database.getSetting('saved_audios', this.cid);
     let list = [];
     try {
       list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
@@ -1349,16 +1352,16 @@ class WhatsAppHandler {
 
   async sendAutoReply(lead, phoneNumber) {
     try {
-      const productInfo = await this.database.getProductInfo();
-      const primaryLink = await this.database.getSetting('primary_link') || 'https://example.com';
-      const backupLink = await this.database.getSetting('backup_link') || '';
-      const minDelay = parseInt(await this.database.getSetting('min_delay_seconds') || '3');
-      const maxDelay = parseInt(await this.database.getSetting('max_delay_seconds') || '10');
+      const productInfo = await this.database.getProductInfo(this.cid);
+      const primaryLink = await this.database.getSetting('primary_link', this.cid) || 'https://example.com';
+      const backupLink = await this.database.getSetting('backup_link', this.cid) || '';
+      const minDelay = parseInt(await this.database.getSetting('min_delay_seconds', this.cid) || '3');
+      const maxDelay = parseInt(await this.database.getSetting('max_delay_seconds', this.cid) || '10');
       
       // ✅ MERGED: Get API key and model (always fetch, will use if auto-reply is enabled)
       // When auto-reply is enabled, automatically use AI if API key is configured
-      const openrouterApiKey = process.env.OPENROUTER_API_KEY || await this.database.getSetting('openrouter_api_key');
-      const aiModel = process.env.AI_MODEL || await this.database.getSetting('ai_model') || 'anthropic/claude-opus-4.6';
+      const openrouterApiKey = process.env.OPENROUTER_API_KEY || await this.database.getSetting('openrouter_api_key', this.cid);
+      const aiModel = process.env.AI_MODEL || await this.database.getSetting('ai_model', this.cid) || 'anthropic/claude-opus-4.6';
 
       // Random delay
       const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
@@ -1371,7 +1374,7 @@ class WhatsAppHandler {
       if (openrouterApiKey && openrouterApiKey.trim() !== '') {
         try {
           // Get last user message for context
-          const messages = await this.database.getMessagesByLead(lead.id);
+          const messages = await this.database.getMessagesByLead(lead.id, this.cid);
           const lastUserMessage = messages.filter(m => m.sender === 'user').pop();
           const userMessage = lastUserMessage?.content || 'Hello';
 
@@ -1391,11 +1394,11 @@ class WhatsAppHandler {
 
       // Update database
       const timestamp = new Date().toISOString();
-      const savedMessage = await this.database.createMessage(lead.id, 'shield', message, 'replied', timestamp);
-      await this.database.incrementReplyCount(lead.id);
+      const savedMessage = await this.database.createMessage(lead.id, 'shield', message, 'replied', timestamp, this.cid);
+      await this.database.incrementReplyCount(lead.id, this.cid);
 
       // Emit WebSocket event for auto-reply
-      const updatedLead = await this.database.getLead(lead.id);
+      const updatedLead = await this.database.getLead(lead.id, this.cid);
       
       // ✅ Use io.emit() directly for consistency
       if (!this.io) {
@@ -1420,10 +1423,10 @@ class WhatsAppHandler {
         console.log(`   ✅ Auto-reply WebSocket events emitted via io.emit()`);
       }
 
-      await this.database.addLog('auto_reply_sent', { phoneNumber, leadId: lead.id, jid, replyCount: lead.reply_count + 1 });
+      await this.database.addLog('auto_reply_sent', { phoneNumber, leadId: lead.id, jid, replyCount: lead.reply_count + 1 }, this.cid);
     } catch (error) {
       console.error('Error sending auto-reply:', error);
-      await this.database.addLog('error', { error: error.message, context: 'sendAutoReply' });
+      await this.database.addLog('error', { error: error.message, context: 'sendAutoReply' }, this.cid);
     }
   }
 
@@ -1528,7 +1531,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       // If request came from an existing chat, pin to that lead first (prevents new lead IDs on reply)
       let lead = null;
       if (leadId) {
-        lead = await this.database.getLead(leadId);
+        lead = await this.database.getLead(leadId, this.cid);
         if (lead) {
           const pinnedPhone = this.database.normalizePhoneNumber(lead.phone_number);
           if (pinnedPhone) normalizedPhone = pinnedPhone;
@@ -1541,14 +1544,14 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       // Fallback lookup path when leadId is not provided/found
       if (!lead) {
         // Same order as message handler: phone first, then JID — avoids duplicate when user messages first
-        lead = await this.database.getLeadByPhone(normalizedPhone);
+        lead = await this.database.getLeadByPhone(normalizedPhone, this.cid);
         if (!lead) {
-          lead = await this.database.getLeadByJid(defaultJid);
+          lead = await this.database.getLeadByJid(defaultJid, this.cid);
         }
       }
       const jidToUse = this.database.getCanonicalJid(normalizedPhone, lead?.jid || null) || defaultJid;
       if (!lead) {
-        lead = await this.database.createLead(normalizedPhone, null, null, jidToUse);
+        lead = await this.database.createLead(normalizedPhone, null, null, jidToUse, this.cid);
         console.log(`   ✅ Created lead: ${lead.id} (JID: ${lead.jid})`);
       } else {
         if (jidToUse && (!lead.jid || this.database.normalizeJid(lead.jid) !== this.database.normalizeJid(jidToUse))) {
@@ -1577,7 +1580,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       const timestamp = new Date().toISOString();
       
       // Deduplicate: don't store if same message arrived via messages.upsert in last 30s
-      const existingMessages = await this.database.getMessagesByLead(lead.id);
+      const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
       const alreadyExists = existingMessages.some(
         m =>
           m.content === message &&
@@ -1587,10 +1590,10 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       
       let savedMessage = null;
       if (!alreadyExists) {
-        savedMessage = await this.database.createMessage(lead.id, 'shield', message, 'replied', timestamp);
+        savedMessage = await this.database.createMessage(lead.id, 'shield', message, 'replied', timestamp, this.cid);
       } else {
         // Message already exists, find it to get the real ID
-        const existingMessages = await this.database.getMessagesByLead(lead.id);
+        const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
         savedMessage = existingMessages.find(
           m =>
             m.content === message &&
@@ -1599,10 +1602,10 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
         );
       }
       
-      await this.database.incrementReplyCount(lead.id);
+      await this.database.incrementReplyCount(lead.id, this.cid);
 
       // Always fetch fresh lead after writing so the payload is up to date
-      const updatedLead = await this.database.getLead(lead.id);
+      const updatedLead = await this.database.getLead(lead.id, this.cid);
 
       // ✅ Use io.emit() — broadcasts to ALL connected browser clients.
       // this.emit() only fires Node EventEmitter listeners internally and never
@@ -1638,11 +1641,11 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
         console.warn('   ⚠️  Message not saved (duplicate) — WebSocket event skipped');
       }
 
-      await this.database.addLog('manual_reply_sent', { phoneNumber: normalizedPhone, leadId: lead.id, jid: jidToUse });
+      await this.database.addLog('manual_reply_sent', { phoneNumber: normalizedPhone, leadId: lead.id, jid: jidToUse }, this.cid);
       return { success: true, leadId: lead.id };
     } catch (error) {
       console.error('❌ sendManualMessage error:', error);
-      await this.database.addLog('error', { error: error.message, context: 'sendManualMessage' });
+      await this.database.addLog('error', { error: error.message, context: 'sendManualMessage' }, this.cid);
       throw error;
     }
   }
@@ -1685,13 +1688,13 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           if (!normalizedPhone) continue;
 
           // Get or create lead using JID first (most accurate), then phone number
-          let lead = await this.database.getLeadByJid(jid);
+          let lead = await this.database.getLeadByJid(jid, this.cid);
           if (!lead) {
-            lead = await this.database.getLeadByPhone(normalizedPhone);
+            lead = await this.database.getLeadByPhone(normalizedPhone, this.cid);
           }
           const jidToStore = this.database.getCanonicalJid(normalizedPhone);
           if (!lead) {
-            lead = await this.database.createLead(normalizedPhone, null, null, jidToStore);
+            lead = await this.database.createLead(normalizedPhone, null, null, jidToStore, this.cid);
           } else if (jidToStore && !lead.jid) {
             lead.jid = jidToStore;
             await this.database.db.write();
@@ -1749,10 +1752,10 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
 
               const jidToStore = this.database.getCanonicalJid(normalizedPhone);
               if (needsUpdate) {
-                await this.database.updateLeadContactInfo(lead.id, contactName, profilePictureUrl, jidToStore);
+                await this.database.updateLeadContactInfo(lead.id, contactName, profilePictureUrl, jidToStore, this.cid);
                 contactsWithInfo++;
               } else if (jidToStore && lead.jid !== jidToStore) {
-                await this.database.updateLeadContactInfo(lead.id, lead.contact_name, lead.profile_picture_url, jidToStore);
+                await this.database.updateLeadContactInfo(lead.id, lead.contact_name, lead.profile_picture_url, jidToStore, this.cid);
               } else if (contactName || profilePictureUrl) {
                 contactsWithInfo++; // Count existing info
               }
@@ -1769,11 +1772,11 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
 
       if (contactsLoaded > 0) {
         console.log(`✅ Stored ${contactsLoaded} contacts in database (${contactsWithInfo} with names/images)`);
-        await this.database.addLog('chats_synced', { contacts: contactsLoaded, withInfo: contactsWithInfo });
+        await this.database.addLog('chats_synced', { contacts: contactsLoaded, withInfo: contactsWithInfo }, this.cid);
       }
     } catch (error) {
       console.error('Error processing chats update:', error);
-      await this.database.addLog('error', { error: error.message, context: 'handleChatsUpdate' });
+      await this.database.addLog('error', { error: error.message, context: 'handleChatsUpdate' }, this.cid);
     }
   }
 
@@ -1818,16 +1821,16 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           if (!messageText || messageText.trim() === '') continue;
 
           const jidToStore = this.database.getCanonicalJid(normalizedPhone);
-          let lead = await this.database.getLeadByJid(remoteJid);
-          if (!lead) lead = await this.database.getLeadByPhone(normalizedPhone);
+          let lead = await this.database.getLeadByJid(remoteJid, this.cid);
+          if (!lead) lead = await this.database.getLeadByPhone(normalizedPhone, this.cid);
           if (!lead) {
-            lead = await this.database.createLead(normalizedPhone, null, null, jidToStore);
+            lead = await this.database.createLead(normalizedPhone, null, null, jidToStore, this.cid);
           } else if (jidToStore && !lead.jid) {
             lead.jid = jidToStore;
             await this.database.db.write();
           }
 
-          const existingMessages = await this.database.getMessagesByLead(lead.id);
+          const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
           const msgTimestamp = msg.messageTimestamp 
             ? new Date(msg.messageTimestamp * 1000).toISOString()
             : new Date().toISOString();
@@ -1841,7 +1844,8 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           await this.database.createMessage(
             lead.id, sender, messageText,
             sender === 'shield' ? 'replied' : 'pending',
-            msgTimestamp
+            msgTimestamp,
+            this.cid
           );
           messagesStored++;
         } catch (msgError) {
@@ -1937,14 +1941,14 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           }
           
           // Get or create lead using JID first (most accurate), then phone number
-          let lead = await this.database.getLeadByJid(jid);
+          let lead = await this.database.getLeadByJid(jid, this.cid);
           if (!lead) {
-            lead = await this.database.getLeadByPhone(normalizedPhone);
+            lead = await this.database.getLeadByPhone(normalizedPhone, this.cid);
           }
           
           const jidToStore = this.database.getCanonicalJid(normalizedPhone);
           if (!lead) {
-            lead = await this.database.createLead(normalizedPhone, contactName, profilePictureUrl, jidToStore);
+            lead = await this.database.createLead(normalizedPhone, contactName, profilePictureUrl, jidToStore, this.cid);
             console.log(`   ✅ Created lead with JID: ${lead.id} (Phone: ${normalizedPhone}, JID: ${lead.jid})`);
           } else {
             if (jidToStore && !lead.jid) {
@@ -1952,12 +1956,12 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
               await this.database.db.write();
             }
             if (contactName && contactName !== lead.contact_name) {
-              await this.database.updateLeadContactInfo(lead.id, contactName, null, jidToStore);
+              await this.database.updateLeadContactInfo(lead.id, contactName, null, jidToStore, this.cid);
               console.log(`   📝 Updated contact name directly from WhatsApp: "${contactName}" (Phone: ${normalizedPhone}, JID: ${jidToStore})`);
             }
           }
           if (profilePictureUrl && profilePictureUrl !== lead.profile_picture_url) {
-            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, profilePictureUrl, jidToStore);
+            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, profilePictureUrl, jidToStore, this.cid);
             console.log(`   🖼️ Updated profile picture directly from WhatsApp for ${normalizedPhone} (JID: ${jidToStore})`);
           }
           
@@ -1973,7 +1977,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
 
       if (contactsStored > 0) {
         console.log(`✅ Processed ${contactsStored} contacts (${contactsWithInfo} with profile pictures)`);
-        await this.database.addLog('contacts_synced', { contacts: contactsStored, withPictures: contactsWithInfo });
+        await this.database.addLog('contacts_synced', { contacts: contactsStored, withPictures: contactsWithInfo }, this.cid);
       }
     } catch (error) {
       console.error('Error processing contacts update:', error);
@@ -1992,8 +1996,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
 
     try {
       console.log('🔄 Refreshing all contact names directly from WhatsApp...');
-      await this.database.db.read();
-      const allLeads = this.database.db.data.leads;
+      const allLeads = await this.database.getAllLeads(null, this.cid);
       let updated = 0;
       let errors = 0;
 
@@ -2035,14 +2038,14 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
           }
 
           if (contactName && contactName !== lead.contact_name) {
-            await this.database.updateLeadContactInfo(lead.id, contactName, profilePictureUrl, jid);
+            await this.database.updateLeadContactInfo(lead.id, contactName, profilePictureUrl, jid, this.cid);
             console.log(`   ✅ Updated lead ${lead.id}: "${lead.contact_name || 'none'}" -> "${contactName}" (Phone: ${lead.phone_number}, JID: ${jid})`);
             updated++;
           } else if (profilePictureUrl && profilePictureUrl !== lead.profile_picture_url) {
-            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, profilePictureUrl, jid);
+            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, profilePictureUrl, jid, this.cid);
             updated++;
           } else if (jid && lead.jid !== jid) {
-            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, lead.profile_picture_url, jid);
+            await this.database.updateLeadContactInfo(lead.id, lead.contact_name, lead.profile_picture_url, jid, this.cid);
             updated++;
           }
         } catch (leadError) {
@@ -2052,7 +2055,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       }
 
       console.log(`✅ Contact name refresh complete: ${updated} updated, ${errors} errors`);
-      await this.database.addLog('contacts_refreshed', { updated, errors, total: allLeads.length });
+      await this.database.addLog('contacts_refreshed', { updated, errors, total: allLeads.length }, this.cid);
       
       return { success: true, updated, errors, total: allLeads.length };
     } catch (error) {
@@ -2215,7 +2218,7 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
         timestamp: new Date().toISOString(),
         reason: 'manual_logout',
         logoutConfirmed: confirmed
-      });
+      }, this.cid);
     } catch (error) {
       console.error('❌ Error disconnecting:', error);
       // Still try to clean up session even if logout failed

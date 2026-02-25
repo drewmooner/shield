@@ -85,6 +85,35 @@ export async function runMigrations(pool) {
         PRIMARY KEY (session_name, key_name)
       );
     `);
+    // Add client_id so we know who owns each record (saved alongside data; used on refresh)
+    await client.query(`
+      ALTER TABLE leads ADD COLUMN IF NOT EXISTS client_id TEXT DEFAULT 'default';
+      UPDATE leads SET client_id = 'default' WHERE client_id IS NULL;
+      ALTER TABLE leads ALTER COLUMN client_id SET NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_leads_client_id ON leads(client_id);
+
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_id TEXT DEFAULT 'default';
+      UPDATE messages SET client_id = 'default' WHERE client_id IS NULL;
+      ALTER TABLE messages ALTER COLUMN client_id SET NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_messages_client_id ON messages(client_id);
+
+      ALTER TABLE bot_logs ADD COLUMN IF NOT EXISTS client_id TEXT DEFAULT 'default';
+      UPDATE bot_logs SET client_id = 'default' WHERE client_id IS NULL;
+      ALTER TABLE bot_logs ALTER COLUMN client_id SET NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_bot_logs_client_id ON bot_logs(client_id);
+    `);
+    // settings: add client_id and composite PK (client_id, key)
+    await client.query(`
+      ALTER TABLE settings ADD COLUMN IF NOT EXISTS client_id TEXT DEFAULT 'default';
+      UPDATE settings SET client_id = 'default' WHERE client_id IS NULL;
+      ALTER TABLE settings ALTER COLUMN client_id SET NOT NULL;
+    `);
+    try {
+      await client.query(`ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey`);
+      await client.query(`ALTER TABLE settings ADD PRIMARY KEY (client_id, key)`);
+    } catch (e) {
+      if (!e.message?.includes('already exists')) throw e;
+    }
   } finally {
     client.release();
   }
@@ -183,18 +212,18 @@ export class PostgresDriver {
     return normalizePhoneNumber(phoneNumber);
   }
 
-  async getLeadByPhone(phoneNumber) {
+  async getLeadByPhone(phoneNumber, clientId = 'default') {
     await this._waitInit();
     const normalized = normalizePhoneNumber(phoneNumber);
     if (!normalized) return null;
     const client = await this.pool.connect();
     try {
       const r = await client.query(
-        'SELECT * FROM leads WHERE phone_number = $1 OR phone_number = $2 LIMIT 1',
-        [phoneNumber, normalized]
+        'SELECT * FROM leads WHERE client_id = $1 AND (phone_number = $2 OR phone_number = $3) LIMIT 1',
+        [clientId, phoneNumber, normalized]
       );
       if (r.rows.length > 0) return this._rowToLead(r.rows[0]);
-      const r2 = await client.query('SELECT * FROM leads');
+      const r2 = await client.query('SELECT * FROM leads WHERE client_id = $1', [clientId]);
       for (const row of r2.rows) {
         const p = normalizePhoneNumber(row.phone_number);
         if (p === normalized || (p && normalized && (p.endsWith(normalized) || normalized.endsWith(p))))
@@ -220,20 +249,20 @@ export class PostgresDriver {
     };
   }
 
-  async getLeadByJid(jid) {
+  async getLeadByJid(jid, clientId = 'default') {
     await this._waitInit();
     const normalizedJid = normalizeJid(jid);
     if (!normalizedJid) return null;
     const client = await this.pool.connect();
     try {
-      let r = await client.query('SELECT * FROM leads WHERE jid = $1 LIMIT 1', [normalizedJid]);
+      let r = await client.query('SELECT * FROM leads WHERE client_id = $1 AND jid = $2 LIMIT 1', [clientId, normalizedJid]);
       if (r.rows.length > 0) return this._rowToLead(r.rows[0]);
       const phonePart = normalizedJid.slice(0, normalizedJid.indexOf('@'));
       const normalized = normalizePhoneNumber(phonePart);
       if (!normalized) return null;
-      const lead = await this.getLeadByPhone(normalized);
+      const lead = await this.getLeadByPhone(normalized, clientId);
       if (lead && lead.jid !== normalizedJid) {
-        await client.query('UPDATE leads SET jid = $1, updated_at = NOW() WHERE id = $2', [normalizedJid, lead.id]);
+        await client.query('UPDATE leads SET jid = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3', [normalizedJid, lead.id, clientId]);
         lead.jid = normalizedJid;
       }
       return lead;
@@ -242,13 +271,13 @@ export class PostgresDriver {
     }
   }
 
-  async findAllLeadsForContact(normalizedPhone, normalizedJid) {
+  async findAllLeadsForContact(normalizedPhone, normalizedJid, clientId = 'default') {
     await this._waitInit();
     const normalized = normalizePhoneNumber(normalizedPhone);
     if (!normalized && !normalizedJid) return [];
     const client = await this.pool.connect();
     try {
-      const r = await client.query('SELECT * FROM leads');
+      const r = await client.query('SELECT * FROM leads WHERE client_id = $1', [clientId]);
       const out = [];
       const ids = new Set();
       for (const row of r.rows) {
@@ -267,7 +296,7 @@ export class PostgresDriver {
     }
   }
 
-  async mergeLeads(leads, preferredPrimaryId = null) {
+  async mergeLeads(leads, preferredPrimaryId = null, clientId = 'default') {
     if (!leads || leads.length <= 1) return leads?.[0] || null;
     await this._waitInit();
     let primary = preferredPrimaryId ? leads.find((l) => l.id === preferredPrimaryId) : null;
@@ -281,84 +310,84 @@ export class PostgresDriver {
     const client = await this.pool.connect();
     try {
       for (const other of others) {
-        await client.query('UPDATE messages SET lead_id = $1 WHERE lead_id = $2', [primaryId, other.id]);
+        await client.query('UPDATE messages SET lead_id = $1 WHERE lead_id = $2 AND client_id = $3', [primaryId, other.id, clientId]);
         totalReplies += (other.reply_count || 0);
         if (other.contact_name && !contactName) contactName = other.contact_name;
         if (other.profile_picture_url && !profilePictureUrl) profilePictureUrl = other.profile_picture_url;
-        await client.query('DELETE FROM leads WHERE id = $1', [other.id]);
+        await client.query('DELETE FROM leads WHERE id = $1 AND client_id = $2', [other.id, clientId]);
       }
       await client.query(
-        `UPDATE leads SET reply_count = $1, contact_name = COALESCE(NULLIF(contact_name,''), $2), profile_picture_url = COALESCE(NULLIF(profile_picture_url,''), $3), updated_at = NOW() WHERE id = $4`,
-        [totalReplies, contactName, profilePictureUrl, primaryId]
+        `UPDATE leads SET reply_count = $1, contact_name = COALESCE(NULLIF(contact_name,''), $2), profile_picture_url = COALESCE(NULLIF(profile_picture_url,''), $3), updated_at = NOW() WHERE id = $4 AND client_id = $5`,
+        [totalReplies, contactName, profilePictureUrl, primaryId, clientId]
       );
-      const r = await client.query('SELECT * FROM leads WHERE id = $1', [primaryId]);
+      const r = await client.query('SELECT * FROM leads WHERE id = $1 AND client_id = $2', [primaryId, clientId]);
       return r.rows[0] ? this._rowToLead(r.rows[0]) : primary;
     } finally {
       client.release();
     }
   }
 
-  async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null) {
+  async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null, clientId = 'default') {
     await this._waitInit();
     const normalizedPhone = normalizePhoneNumber(phoneNumber) || phoneNumber;
     const normalizedJid = (jid ? normalizeJid(jid) : null) || getCanonicalJid(normalizedPhone);
 
-    let lead = await this.getLeadByPhone(normalizedPhone);
+    let lead = await this.getLeadByPhone(normalizedPhone, clientId);
     if (lead) {
       const client = await this.pool.connect();
       try {
         await client.query(
-          'UPDATE leads SET jid = COALESCE($1, jid), contact_name = COALESCE($2, contact_name), profile_picture_url = COALESCE($3, profile_picture_url), updated_at = NOW() WHERE id = $4',
-          [normalizedJid, contactName, profilePictureUrl, lead.id]
+          'UPDATE leads SET jid = COALESCE($1, jid), contact_name = COALESCE($2, contact_name), profile_picture_url = COALESCE($3, profile_picture_url), updated_at = NOW() WHERE id = $4 AND client_id = $5',
+          [normalizedJid, contactName, profilePictureUrl, lead.id, clientId]
         );
       } finally {
         client.release();
       }
-      return this.getLeadByPhone(normalizedPhone);
+      return this.getLeadByPhone(normalizedPhone, clientId);
     }
 
-    lead = await this.getLeadByJid(normalizedJid);
+    lead = await this.getLeadByJid(normalizedJid, clientId);
     if (lead) {
       const client = await this.pool.connect();
       try {
         await client.query(
-          'UPDATE leads SET phone_number = $1, contact_name = COALESCE($2, contact_name), profile_picture_url = COALESCE($3, profile_picture_url), updated_at = NOW() WHERE id = $4',
-          [normalizedPhone, contactName, profilePictureUrl, lead.id]
+          'UPDATE leads SET phone_number = $1, contact_name = COALESCE($2, contact_name), profile_picture_url = COALESCE($3, profile_picture_url), updated_at = NOW() WHERE id = $4 AND client_id = $5',
+          [normalizedPhone, contactName, profilePictureUrl, lead.id, clientId]
         );
       } finally {
         client.release();
       }
-      return this.getLeadByJid(normalizedJid);
+      return this.getLeadByJid(normalizedJid, clientId);
     }
 
     const id = randomUUID();
     const client = await this.pool.connect();
     try {
       await client.query(
-        `INSERT INTO leads (id, phone_number, jid, contact_name, profile_picture_url, reply_count, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, 0, 'pending', NOW(), NOW())`,
-        [id, normalizedPhone, normalizedJid, contactName, profilePictureUrl]
+        `INSERT INTO leads (id, client_id, phone_number, jid, contact_name, profile_picture_url, reply_count, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, 'pending', NOW(), NOW())`,
+        [id, clientId, normalizedPhone, normalizedJid, contactName, profilePictureUrl]
       );
     } finally {
       client.release();
     }
-    return this.getLead(id);
+    return this.getLead(id, clientId);
   }
 
-  async updateLeadJid(leadId, jid) {
+  async updateLeadJid(leadId, jid, clientId = 'default') {
     await this._waitInit();
     const normalizedJid = normalizeJid(jid);
     if (!normalizedJid) return null;
     const client = await this.pool.connect();
     try {
-      await client.query('UPDATE leads SET jid = $1, updated_at = NOW() WHERE id = $2', [normalizedJid, leadId]);
+      await client.query('UPDATE leads SET jid = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3', [normalizedJid, leadId, clientId]);
     } finally {
       client.release();
     }
-    return this.getLead(leadId);
+    return this.getLead(leadId, clientId);
   }
 
-  async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null) {
+  async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
@@ -377,23 +406,25 @@ export class PostgresDriver {
         updates.push(`jid = $${i++}`);
         values.push(normalizeJid(jid));
       }
-      values.push(leadId);
-      await client.query(`UPDATE leads SET ${updates.join(', ')} WHERE id = $${i}`, values);
+      values.push(leadId, clientId);
+      const idParam = values.length - 1;
+      const cidParam = values.length;
+      await client.query(`UPDATE leads SET ${updates.join(', ')} WHERE id = $${idParam} AND client_id = $${cidParam}`, values);
     } finally {
       client.release();
     }
-    return this.getLead(leadId);
+    return this.getLead(leadId, clientId);
   }
 
-  async getOrCreateLead(phoneNumber) {
+  async getOrCreateLead(phoneNumber, clientId = 'default') {
     await this._waitInit();
     const normalized = normalizePhoneNumber(phoneNumber);
-    let lead = await this.getLeadByPhone(phoneNumber);
-    if (!lead) lead = await this.createLead(normalized || phoneNumber);
+    let lead = await this.getLeadByPhone(phoneNumber, clientId);
+    if (!lead) lead = await this.createLead(normalized || phoneNumber, null, null, null, clientId);
     else if (lead.phone_number !== normalized && normalized !== '') {
       const client = await this.pool.connect();
       try {
-        await client.query('UPDATE leads SET phone_number = $1, updated_at = NOW() WHERE id = $2', [normalized, lead.id]);
+        await client.query('UPDATE leads SET phone_number = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3', [normalized, lead.id, clientId]);
       } finally {
         client.release();
       }
@@ -401,78 +432,78 @@ export class PostgresDriver {
     return lead;
   }
 
-  async updateLeadStatus(leadId, status) {
+  async updateLeadStatus(leadId, status, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      await client.query('UPDATE leads SET status = $1, updated_at = NOW() WHERE id = $2', [status, leadId]);
+      await client.query('UPDATE leads SET status = $1, updated_at = NOW() WHERE id = $2 AND client_id = $3', [status, leadId, clientId]);
     } finally {
       client.release();
     }
   }
 
-  async incrementReplyCount(leadId) {
+  async incrementReplyCount(leadId, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       await client.query(
-        "UPDATE leads SET reply_count = COALESCE(reply_count,0) + 1, status = 'replied', updated_at = NOW() WHERE id = $1",
-        [leadId]
+        "UPDATE leads SET reply_count = COALESCE(reply_count,0) + 1, status = 'replied', updated_at = NOW() WHERE id = $1 AND client_id = $2",
+        [leadId, clientId]
       );
     } finally {
       client.release();
     }
-    return this.getLead(leadId);
+    return this.getLead(leadId, clientId);
   }
 
-  async getAllLeads(status = null) {
+  async getAllLeads(status = null, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       const r = status
-        ? await client.query('SELECT * FROM leads WHERE status = $1 ORDER BY updated_at DESC', [status])
-        : await client.query('SELECT * FROM leads ORDER BY updated_at DESC');
+        ? await client.query('SELECT * FROM leads WHERE client_id = $1 AND status = $2 ORDER BY updated_at DESC', [clientId, status])
+        : await client.query('SELECT * FROM leads WHERE client_id = $1 ORDER BY updated_at DESC', [clientId]);
       return r.rows.map((row) => this._rowToLead(row));
     } finally {
       client.release();
     }
   }
 
-  async getLead(leadId) {
+  async getLead(leadId, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      const r = await client.query('SELECT * FROM leads WHERE id = $1', [leadId]);
+      const r = await client.query('SELECT * FROM leads WHERE id = $1 AND client_id = $2', [leadId, clientId]);
       return r.rows[0] ? this._rowToLead(r.rows[0]) : null;
     } finally {
       client.release();
     }
   }
 
-  async createMessage(leadId, sender, content, status = 'pending', messageTimestamp = null) {
+  async createMessage(leadId, sender, content, status = 'pending', messageTimestamp = null, clientId = 'default') {
     await this._waitInit();
     const id = randomUUID();
     const timestamp = messageTimestamp || new Date().toISOString();
     const client = await this.pool.connect();
     try {
       await client.query(
-        'INSERT INTO messages (id, lead_id, sender, content, status, timestamp) VALUES ($1, $2, $3, $4, $5, $6::timestamptz)',
-        [id, leadId, sender, content, status, timestamp]
+        'INSERT INTO messages (id, client_id, lead_id, sender, content, status, timestamp) VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz)',
+        [id, clientId, leadId, sender, content, status, timestamp]
       );
-      await client.query('UPDATE leads SET updated_at = $1::timestamptz WHERE id = $2', [timestamp, leadId]);
+      await client.query('UPDATE leads SET updated_at = $1::timestamptz WHERE id = $2 AND client_id = $3', [timestamp, leadId, clientId]);
     } finally {
       client.release();
     }
     return { id, lead_id: leadId, sender, content, status, timestamp };
   }
 
-  async getMessagesByLead(leadId) {
+  async getMessagesByLead(leadId, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       const r = await client.query(
-        'SELECT id, lead_id, sender, content, status, timestamp FROM messages WHERE lead_id = $1 ORDER BY timestamp ASC',
-        [leadId]
+        'SELECT id, lead_id, sender, content, status, timestamp FROM messages WHERE lead_id = $1 AND client_id = $2 ORDER BY timestamp ASC',
+        [leadId, clientId]
       );
       return r.rows.map((row) => ({
         id: row.id,
@@ -487,22 +518,22 @@ export class PostgresDriver {
     }
   }
 
-  async deleteLead(leadId) {
+  async deleteLead(leadId, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      await client.query('DELETE FROM messages WHERE lead_id = $1', [leadId]);
-      await client.query('DELETE FROM leads WHERE id = $1', [leadId]);
+      await client.query('DELETE FROM messages WHERE lead_id = $1 AND client_id = $2', [leadId, clientId]);
+      await client.query('DELETE FROM leads WHERE id = $1 AND client_id = $2', [leadId, clientId]);
     } finally {
       client.release();
     }
   }
 
-  async clearAllMessages() {
+  async clearAllMessages(clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      const r = await client.query('DELETE FROM messages RETURNING id');
+      const r = await client.query('DELETE FROM messages WHERE client_id = $1 RETURNING id', [clientId]);
       console.log(`🧹 Cleared ${r.rowCount} messages from database`);
       return r.rowCount;
     } finally {
@@ -510,12 +541,12 @@ export class PostgresDriver {
     }
   }
 
-  async clearAll() {
+  async clearAll(clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      const rLeads = await client.query('DELETE FROM leads RETURNING id');
-      const rMsg = await client.query('DELETE FROM messages RETURNING id');
+      const rMsg = await client.query('DELETE FROM messages WHERE client_id = $1 RETURNING id', [clientId]);
+      const rLeads = await client.query('DELETE FROM leads WHERE client_id = $1 RETURNING id', [clientId]);
       console.log(`🧹 Cleared ${rLeads.rowCount} leads and ${rMsg.rowCount} messages - fresh start`);
       return { leadCount: rLeads.rowCount, messageCount: rMsg.rowCount };
     } finally {
@@ -523,45 +554,45 @@ export class PostgresDriver {
     }
   }
 
-  async updateMessageStatus(messageId, status) {
+  async updateMessageStatus(messageId, status, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      await client.query('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId]);
+      await client.query('UPDATE messages SET status = $1 WHERE id = $2 AND client_id = $3', [status, messageId, clientId]);
     } finally {
       client.release();
     }
   }
 
-  async getSetting(key) {
+  async getSetting(key, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      const r = await client.query('SELECT value FROM settings WHERE key = $1', [key]);
+      const r = await client.query('SELECT value FROM settings WHERE client_id = $1 AND key = $2', [clientId, key]);
       return r.rows[0]?.value ?? null;
     } finally {
       client.release();
     }
   }
 
-  async setSetting(key, value) {
+  async setSetting(key, value, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       await client.query(
-        'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2',
-        [key, value]
+        'INSERT INTO settings (client_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (client_id, key) DO UPDATE SET value = $3',
+        [clientId, key, value]
       );
     } finally {
       client.release();
     }
   }
 
-  async getAllSettings() {
+  async getAllSettings(clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
-      const r = await client.query('SELECT key, value FROM settings');
+      const r = await client.query('SELECT key, value FROM settings WHERE client_id = $1', [clientId]);
       const out = {};
       for (const row of r.rows) out[row.key] = row.value;
       return out;
@@ -570,34 +601,34 @@ export class PostgresDriver {
     }
   }
 
-  async getProductInfo() {
-    return (await this.getSetting('product_info')) || '';
+  async getProductInfo(clientId = 'default') {
+    return (await this.getSetting('product_info', clientId)) || '';
   }
 
-  async setProductInfo(productInfo) {
-    return this.setSetting('product_info', productInfo);
+  async setProductInfo(productInfo, clientId = 'default') {
+    return this.setSetting('product_info', productInfo, clientId);
   }
 
-  async addLog(action, details = null) {
+  async addLog(action, details = null, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       await client.query(
-        'INSERT INTO bot_logs (action, details, timestamp) VALUES ($1, $2, NOW())',
-        [action, details ? JSON.stringify(details) : null]
+        'INSERT INTO bot_logs (action, details, timestamp, client_id) VALUES ($1, $2, NOW(), $3)',
+        [action, details ? JSON.stringify(details) : null, clientId]
       );
     } finally {
       client.release();
     }
   }
 
-  async getRecentLogs(limit = 20) {
+  async getRecentLogs(limit = 20, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       const r = await client.query(
-        'SELECT id, action, details, timestamp FROM bot_logs ORDER BY timestamp DESC LIMIT $1',
-        [limit]
+        'SELECT id, action, details, timestamp FROM bot_logs WHERE client_id = $1 ORDER BY timestamp DESC LIMIT $2',
+        [clientId, limit]
       );
       return r.rows.map((row) => ({
         id: row.id,
@@ -611,13 +642,13 @@ export class PostgresDriver {
   }
 
   /** Prune messages older than N days to save space. Returns number of rows deleted. */
-  async pruneOldMessages(olderThanDays = 5) {
+  async pruneOldMessages(olderThanDays = 5, clientId = 'default') {
     await this._waitInit();
     const client = await this.pool.connect();
     try {
       const r = await client.query(
-        "DELETE FROM messages WHERE timestamp < NOW() - ($1::text || ' days')::interval RETURNING id",
-        [olderThanDays]
+        "DELETE FROM messages WHERE client_id = $1 AND timestamp < NOW() - ($2::text || ' days')::interval RETURNING id",
+        [clientId, olderThanDays]
       );
       if (r.rowCount > 0) console.log(`🧹 Pruned ${r.rowCount} old messages (older than ${olderThanDays} days)`);
       return r.rowCount;

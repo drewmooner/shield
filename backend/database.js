@@ -159,8 +159,8 @@ class Database {
     return normalized;
   }
 
-  async getLeadByPhone(phoneNumber) {
-    if (this.driver) return this.driver.getLeadByPhone(phoneNumber);
+  async getLeadByPhone(phoneNumber, clientId = 'default') {
+    if (this.driver) return this.driver.getLeadByPhone(phoneNumber, clientId);
     await this.db.read();
     const normalized = this.normalizePhoneNumber(phoneNumber);
     if (!normalized) return null;
@@ -177,8 +177,8 @@ class Database {
     return lead || null;
   }
 
-  async getLeadByJid(jid) {
-    if (this.driver) return this.driver.getLeadByJid(jid);
+  async getLeadByJid(jid, clientId = 'default') {
+    if (this.driver) return this.driver.getLeadByJid(jid, clientId);
     await this.db.read();
     const normalizedJid = this.normalizeJid(jid);
     if (!normalizedJid) return null;
@@ -207,8 +207,8 @@ class Database {
   }
 
   /** Find ALL leads that represent the same contact (by normalized phone or JID). Used to merge on incoming. */
-  async findAllLeadsForContact(normalizedPhone, normalizedJid) {
-    if (this.driver) return this.driver.findAllLeadsForContact(normalizedPhone, normalizedJid);
+  async findAllLeadsForContact(normalizedPhone, normalizedJid, clientId = 'default') {
+    if (this.driver) return this.driver.findAllLeadsForContact(normalizedPhone, normalizedJid, clientId);
     await this.db.read();
     const normalized = this.normalizePhoneNumber(normalizedPhone);
     if (!normalized && !normalizedJid) return [];
@@ -232,8 +232,8 @@ class Database {
   }
 
   /** Merge multiple leads into one (messages, reply_count, contact info). Returns the primary lead. */
-  async mergeLeads(leads, preferredPrimaryId = null) {
-    if (this.driver) return this.driver.mergeLeads(leads, preferredPrimaryId);
+  async mergeLeads(leads, preferredPrimaryId = null, clientId = 'default') {
+    if (this.driver) return this.driver.mergeLeads(leads, preferredPrimaryId, clientId);
     if (!leads || leads.length <= 1) return leads?.[0] || null;
     await this.db.read();
 
@@ -261,8 +261,8 @@ class Database {
   }
 
   /** Find or create lead. Never creates a duplicate: always finds by phone or JID first. JID is always ${phone}@s.whatsapp.net. */
-  async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null) {
-    if (this.driver) return this.driver.createLead(phoneNumber, contactName, profilePictureUrl, jid);
+  async createLead(phoneNumber, contactName = null, profilePictureUrl = null, jid = null, clientId = 'default') {
+    if (this.driver) return this.driver.createLead(phoneNumber, contactName, profilePictureUrl, jid, clientId);
     await this.db.read();
     const normalizedPhone = this.normalizePhoneNumber(phoneNumber) || phoneNumber;
     const normalizedJid = (jid ? this.normalizeJid(jid) : null) || this.getCanonicalJid(normalizedPhone);
@@ -335,8 +335,8 @@ class Database {
     return newLead;
   }
 
-  async updateLeadJid(leadId, jid) {
-    if (this.driver) return this.driver.updateLeadJid(leadId, jid);
+  async updateLeadJid(leadId, jid, clientId = 'default') {
+    if (this.driver) return this.driver.updateLeadJid(leadId, jid, clientId);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (!lead) return null;
@@ -349,8 +349,8 @@ class Database {
     return lead;
   }
 
-  async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null) {
-    if (this.driver) return this.driver.updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid);
+  async updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid = null, clientId = 'default') {
+    if (this.driver) return this.driver.updateLeadContactInfo(leadId, contactName, profilePictureUrl, jid, clientId);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -364,8 +364,8 @@ class Database {
     return lead;
   }
 
-  async getOrCreateLead(phoneNumber) {
-    if (this.driver) return this.driver.getOrCreateLead(phoneNumber);
+  async getOrCreateLead(phoneNumber, clientId = 'default') {
+    if (this.driver) return this.driver.getOrCreateLead(phoneNumber, clientId);
     await this.db.read();
     // Normalize phone number first
     const normalized = this.normalizePhoneNumber(phoneNumber);
@@ -386,8 +386,8 @@ class Database {
     return lead;
   }
 
-  async updateLeadStatus(leadId, status) {
-    if (this.driver) return this.driver.updateLeadStatus(leadId, status);
+  async updateLeadStatus(leadId, status, clientId = 'default') {
+    if (this.driver) return this.driver.updateLeadStatus(leadId, status, clientId);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -397,8 +397,8 @@ class Database {
     }
   }
 
-  async incrementReplyCount(leadId) {
-    if (this.driver) return this.driver.incrementReplyCount(leadId);
+  async incrementReplyCount(leadId, clientId = 'default') {
+    if (this.driver) return this.driver.incrementReplyCount(leadId, clientId);
     await this.db.read();
     const lead = this.db.data.leads.find(l => l.id === leadId);
     if (lead) {
@@ -410,8 +410,8 @@ class Database {
     return lead;
   }
 
-  async getAllLeads(status = null) {
-    if (this.driver) return this.driver.getAllLeads(status);
+  async getAllLeads(status = null, clientId = 'default') {
+    if (this.driver) return this.driver.getAllLeads(status, clientId);
     // Always read fresh from disk to avoid stale data
     await this.db.read();
     let leads = [...this.db.data.leads];
@@ -426,15 +426,15 @@ class Database {
     });
   }
 
-  async getLead(leadId) {
-    if (this.driver) return this.driver.getLead(leadId);
+  async getLead(leadId, clientId = 'default') {
+    if (this.driver) return this.driver.getLead(leadId, clientId);
     await this.db.read();
     return this.db.data.leads.find(l => l.id === leadId);
   }
 
   // Message operations
-  async createMessage(leadId, sender, content, status = 'pending', messageTimestamp = null) {
-    if (this.driver) return this.driver.createMessage(leadId, sender, content, status, messageTimestamp);
+  async createMessage(leadId, sender, content, status = 'pending', messageTimestamp = null, clientId = 'default') {
+    if (this.driver) return this.driver.createMessage(leadId, sender, content, status, messageTimestamp, clientId);
     await this.db.read();
     const id = randomUUID();
     const timestamp = messageTimestamp || new Date().toISOString();
@@ -458,8 +458,8 @@ class Database {
     return message;
   }
 
-  async getMessagesByLead(leadId) {
-    if (this.driver) return this.driver.getMessagesByLead(leadId);
+  async getMessagesByLead(leadId, clientId = 'default') {
+    if (this.driver) return this.driver.getMessagesByLead(leadId, clientId);
     await this.db.read();
     const messages = this.db.data.messages
       .filter(m => m.lead_id === leadId)
@@ -470,8 +470,8 @@ class Database {
     return messages;
   }
 
-  async deleteLead(leadId) {
-    if (this.driver) return this.driver.deleteLead(leadId);
+  async deleteLead(leadId, clientId = 'default') {
+    if (this.driver) return this.driver.deleteLead(leadId, clientId);
     await this.db.read();
     // Remove lead
     this.db.data.leads = this.db.data.leads.filter(l => l.id !== leadId);
@@ -480,8 +480,8 @@ class Database {
     await this.db.write();
   }
 
-  async clearAllMessages() {
-    if (this.driver) return this.driver.clearAllMessages();
+  async clearAllMessages(clientId = 'default') {
+    if (this.driver) return this.driver.clearAllMessages(clientId);
     try {
       await this.db.read();
       const messageCount = this.db.data.messages ? this.db.data.messages.length : 0;
@@ -503,8 +503,8 @@ class Database {
   }
 
   /** Clear everything: all leads and all messages. UI will be empty until new messages arrive. */
-  async clearAll() {
-    if (this.driver) return this.driver.clearAll();
+  async clearAll(clientId = 'default') {
+    if (this.driver) return this.driver.clearAll(clientId);
     try {
       await this.db.read();
       const leadCount = this.db.data.leads ? this.db.data.leads.length : 0;
@@ -522,8 +522,8 @@ class Database {
     }
   }
 
-  async updateMessageStatus(messageId, status) {
-    if (this.driver) return this.driver.updateMessageStatus(messageId, status);
+  async updateMessageStatus(messageId, status, clientId = 'default') {
+    if (this.driver) return this.driver.updateMessageStatus(messageId, status, clientId);
     await this.db.read();
     const message = this.db.data.messages.find(m => m.id === messageId);
     if (message) {
@@ -533,38 +533,38 @@ class Database {
   }
 
   // Settings operations
-  async getSetting(key) {
-    if (this.driver) return this.driver.getSetting(key);
+  async getSetting(key, clientId = 'default') {
+    if (this.driver) return this.driver.getSetting(key, clientId);
     await this.db.read();
     return this.db.data.settings[key] || null;
   }
 
-  async setSetting(key, value) {
-    if (this.driver) return this.driver.setSetting(key, value);
+  async setSetting(key, value, clientId = 'default') {
+    if (this.driver) return this.driver.setSetting(key, value, clientId);
     await this.db.read();
     this.db.data.settings[key] = value;
     await this.db.write();
   }
 
-  async getAllSettings() {
-    if (this.driver) return this.driver.getAllSettings();
+  async getAllSettings(clientId = 'default') {
+    if (this.driver) return this.driver.getAllSettings(clientId);
     await this.db.read();
     return { ...this.db.data.settings };
   }
 
   // Product information operations
-  async getProductInfo() {
-    if (this.driver) return this.driver.getProductInfo();
-    return await this.getSetting('product_info') || '';
+  async getProductInfo(clientId = 'default') {
+    if (this.driver) return this.driver.getProductInfo(clientId);
+    return await this.getSetting('product_info', clientId) || '';
   }
 
-  async setProductInfo(productInfo) {
-    await this.setSetting('product_info', productInfo);
+  async setProductInfo(productInfo, clientId = 'default') {
+    await this.setSetting('product_info', productInfo, clientId);
   }
 
   // Bot logs
-  async addLog(action, details = null) {
-    if (this.driver) return this.driver.addLog(action, details);
+  async addLog(action, details = null, clientId = 'default') {
+    if (this.driver) return this.driver.addLog(action, details, clientId);
     await this.db.read();
     const log = {
       id: this.db.data.bot_logs.length + 1,
@@ -576,8 +576,8 @@ class Database {
     await this.db.write();
   }
 
-  async getRecentLogs(limit = 20) {
-    if (this.driver) return this.driver.getRecentLogs(limit);
+  async getRecentLogs(limit = 20, clientId = 'default') {
+    if (this.driver) return this.driver.getRecentLogs(limit, clientId);
     await this.db.read();
     return this.db.data.bot_logs
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -585,8 +585,8 @@ class Database {
   }
 
   /** Prune messages older than N days to save space. No-op for JSON DB if days not set; use for Postgres. */
-  async pruneOldMessages(olderThanDays = 5) {
-    if (this.driver) return this.driver.pruneOldMessages(olderThanDays);
+  async pruneOldMessages(olderThanDays = 5, clientId = 'default') {
+    if (this.driver) return this.driver.pruneOldMessages(olderThanDays, clientId);
     try {
       await this.db.read();
       const cutoff = new Date();
