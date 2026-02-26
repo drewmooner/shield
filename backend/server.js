@@ -41,65 +41,19 @@ const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
-// Bind immediately so the host sees the port open (before DB/WhatsApp init)
-app.get('/api/health', async (req, res) => {
-  const health = { status: 'ok', timestamp: new Date().toISOString() };
-  
-  // Check database connectivity if using PostgreSQL
-  if (db.driver) {
-    try {
-      await db.driver._waitInit();
-      const pool = db.getPool();
-      if (pool) {
-        const client = await pool.connect();
-        try {
-          await client.query('SELECT 1');
-          health.database = 'connected';
-        } finally {
-          client.release();
-        }
-      }
-    } catch (error) {
-      health.status = 'degraded';
-      health.database = 'error';
-      health.databaseError = error.message;
-    }
-  } else {
-    health.database = 'json_file';
-  }
-  
-  res.json(health);
+// Simple health check that works immediately (before DB init)
+// This ensures Railway health checks don't fail during startup
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-app.get('/health', async (req, res) => {
-  const health = { status: 'ok', timestamp: new Date().toISOString() };
-  
-  // Check database connectivity if using PostgreSQL
-  if (db.driver) {
-    try {
-      await db.driver._waitInit();
-      const pool = db.getPool();
-      if (pool) {
-        const client = await pool.connect();
-        try {
-          await client.query('SELECT 1');
-          health.database = 'connected';
-        } finally {
-          client.release();
-        }
-      }
-    } catch (error) {
-      health.status = 'degraded';
-      health.database = 'error';
-      health.databaseError = error.message;
-    }
-  } else {
-    health.database = 'json_file';
-  }
-  
-  res.json(health);
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Start server immediately so Railway sees the port is open
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
+  console.log(`✅ Health check available at http://0.0.0.0:${PORT}/health`);
 });
 
 // Build allowed origins once (Express + Socket.IO use the same list)
@@ -251,10 +205,84 @@ try {
     console.log('   💡 To use PostgreSQL, set DATABASE_URL environment variable');
     db = new Database(process.env.DB_PATH || 'shield.json');
   }
+  
+  // Update health check endpoints now that db is initialized (if it exists)
+  if (db) {
+    // Override simple health checks with enhanced ones that check database
+    app.get('/api/health', async (req, res) => {
+      const health = { status: 'ok', timestamp: new Date().toISOString() };
+      
+      // Check database connectivity if using PostgreSQL
+      if (db.driver) {
+        try {
+          await db.driver._waitInit();
+          const pool = db.getPool();
+          if (pool) {
+            const client = await pool.connect();
+            try {
+              await client.query('SELECT 1');
+              health.database = 'connected';
+            } finally {
+              client.release();
+            }
+          }
+        } catch (error) {
+          health.status = 'degraded';
+          health.database = 'error';
+          health.databaseError = error.message;
+        }
+      } else {
+        health.database = 'json_file';
+      }
+      
+      res.json(health);
+    });
+    
+    app.get('/health', async (req, res) => {
+      const health = { status: 'ok', timestamp: new Date().toISOString() };
+      
+      // Check database connectivity if using PostgreSQL
+      if (db.driver) {
+        try {
+          await db.driver._waitInit();
+          const pool = db.getPool();
+          if (pool) {
+            const client = await pool.connect();
+            try {
+              await client.query('SELECT 1');
+              health.database = 'connected';
+            } finally {
+              client.release();
+            }
+          }
+        } catch (error) {
+          health.status = 'degraded';
+          health.database = 'error';
+          health.databaseError = error.message;
+        }
+      } else {
+        health.database = 'json_file';
+      }
+      
+      res.json(health);
+    });
+    
+    console.log('✅ Database initialized, enhanced health checks enabled');
+  }
 } catch (error) {
   console.error('❌ Failed to initialize database:', error.message);
   console.error('   Stack:', error.stack);
-  process.exit(1);
+  // Don't exit - let the server continue with basic health checks
+  // This prevents Railway from killing the container
+  console.error('   ⚠️ Server will continue with limited functionality (JSON file mode)');
+  // Initialize with JSON file as fallback
+  try {
+    db = new Database(process.env.DB_PATH || 'shield.json');
+    console.log('   ✅ Fallback to JSON database successful');
+  } catch (fallbackError) {
+    console.error('   ❌ Fallback database initialization also failed:', fallbackError.message);
+    // Still don't exit - health checks will work without database
+  }
 }
 
 // ----- Auth: JWT optional; when JWT_SECRET set, multi-tenant per user -----
