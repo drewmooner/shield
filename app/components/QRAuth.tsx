@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode.react';
 import { useSocketContext } from '../providers/SocketProvider';
 import { getBotStatus, reconnectBot } from '../lib/api';
+import { useAuth } from '../providers/AuthProvider';
 
 interface BotStatus {
   status: string;
@@ -18,6 +19,7 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
   const [status, setStatus] = useState<BotStatus>({ status: 'initializing' });
   const [error, setError] = useState<string | null>(null);
   const { socket, connected } = useSocketContext();
+  const { logout } = useAuth();
 
   // Per-request timeout (fail fast so we can retry sooner)
   const REQUEST_TIMEOUT_MS = 8000;
@@ -153,6 +155,12 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
           <p className="text-sm text-zinc-500 dark:text-zinc-500">
             Open WhatsApp → Settings → Linked Devices → Link a Device
           </p>
+          <button
+            onClick={() => logout()}
+            className="mt-4 text-sm text-zinc-600 dark:text-zinc-400 hover:underline"
+          >
+            Back to sign in
+          </button>
         </div>
       </div>
     );

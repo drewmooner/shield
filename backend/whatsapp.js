@@ -1225,12 +1225,31 @@ class WhatsAppHandler {
       const relativePath = await this.getAudioPathById(reply.audioId);
       if (!relativePath) {
         console.error('sendKeywordReply: no audio path for audioId', reply.audioId);
+        if (reply.message && reply.message.trim()) {
+          await this.sendMessage(sendJid, reply.message.trim());
+          await this.database.addLog('keyword_reply_audio_fallback_text', {
+            phoneNumber,
+            leadId: lead.id,
+            reason: 'missing_audio_path',
+            audioId: reply.audioId
+          }, this.cid);
+        }
         return;
       }
       const dataDir = join(__dirname, 'data');
       const fullPath = join(dataDir, relativePath.replace(/\\/g, '/'));
       if (!existsSync(fullPath)) {
         console.error('sendKeywordReply: audio file not found', fullPath);
+        if (reply.message && reply.message.trim()) {
+          await this.sendMessage(sendJid, reply.message.trim());
+          await this.database.addLog('keyword_reply_audio_fallback_text', {
+            phoneNumber,
+            leadId: lead.id,
+            reason: 'audio_file_not_found',
+            audioId: reply.audioId,
+            path: relativePath
+          }, this.cid);
+        }
         return;
       }
       try {
