@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, createReadStream, unlinkSync } from 'fs';
 
+// Load .env file (if it exists) - Railway environment variables take precedence
 dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -206,11 +207,29 @@ app.use(express.static(join(__dirname, '../public')));
 // Initialize database (PostgreSQL when DATABASE_URL set, else JSON file)
 let db;
 try {
-  if (process.env.DATABASE_URL) {
+  // Debug: Check if DATABASE_URL is set (without logging the actual URL for security)
+  const hasDatabaseUrl = !!process.env.DATABASE_URL;
+  const databaseUrlLength = process.env.DATABASE_URL ? process.env.DATABASE_URL.length : 0;
+  
+  console.log('🔍 Database configuration check:');
+  console.log(`   DATABASE_URL is set: ${hasDatabaseUrl}`);
+  if (hasDatabaseUrl) {
+    console.log(`   DATABASE_URL length: ${databaseUrlLength} characters`);
+    // Show first few chars and last few chars for debugging (not the full URL)
+    const url = process.env.DATABASE_URL;
+    const preview = url.length > 20 ? `${url.substring(0, 10)}...${url.substring(url.length - 10)}` : '***';
+    console.log(`   DATABASE_URL preview: ${preview}`);
+  } else {
+    console.log('   ⚠️ DATABASE_URL not found in environment variables');
+    console.log('   Available env vars:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('DB')).join(', ') || 'none');
+  }
+  
+  if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
     console.log('🔄 Initializing database with PostgreSQL...');
-    db = new Database({ databaseUrl: process.env.DATABASE_URL });
+    db = new Database({ databaseUrl: process.env.DATABASE_URL.trim() });
   } else {
     console.log('🔄 Initializing database with JSON file...');
+    console.log('   💡 To use PostgreSQL, set DATABASE_URL environment variable');
     db = new Database(process.env.DB_PATH || 'shield.json');
   }
 } catch (error) {
