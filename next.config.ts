@@ -2,11 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    // For production: Use NEXT_PUBLIC_API_URL if set (Railway backend)
-    // For development: Use localhost
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL 
-      ? process.env.NEXT_PUBLIC_API_URL.replace('/api', '') // Remove /api if present
-      : 'http://localhost:3002';
+    // For production: Use NEXT_PUBLIC_API_URL if set (e.g. https://your-backend.up.railway.app/api)
+    // If unset at build time, rewrites point to localhost → ECONNREFUSED on Railway.
+    const raw = process.env.NEXT_PUBLIC_API_URL || '';
+    const backendUrl = raw ? raw.replace(/\/api\/?$/, '') : 'http://localhost:3002';
     
     return [
       {
