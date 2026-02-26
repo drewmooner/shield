@@ -286,3 +286,16 @@ export async function deleteAudio(id: string) {
   }
   return safeJsonResponse(res);
 }
+
+export async function renameAudio(id: string, name: string) {
+  const res = await fetchWithAuth(`${API_URL}/settings/audio/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Rename failed: ${res.status} ${text.substring(0, 100)}`);
+  }
+  return safeJsonResponse(res);
+}

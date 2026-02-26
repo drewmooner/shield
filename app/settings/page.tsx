@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { getSettings, updateSettings, uploadAudio, getAudioBlobUrl, deleteAudio } from '../lib/api';
+import { getSettings, updateSettings, uploadAudio, getAudioBlobUrl, deleteAudio, renameAudio } from '../lib/api';
 import { useSocketContext } from '../providers/SocketProvider';
 import { useAuth } from '../providers/AuthProvider';
 
 interface SavedAudio {
   id: string;
   path: string;
+  name?: string;
 }
 
 interface KeywordReply {
@@ -97,11 +98,15 @@ export default function SettingsPage() {
   }, [socket, connected]);
 
   function parseSavedAudios(v: unknown): SavedAudio[] {
-    if (Array.isArray(v)) return v as SavedAudio[];
+    const toList = (value: unknown): SavedAudio[] => {
+      if (!Array.isArray(value)) return [];
+      return value as SavedAudio[];
+    };
+    if (Array.isArray(v)) return toList(v);
     if (typeof v === 'string') {
       try {
         const arr = JSON.parse(v);
-        return Array.isArray(arr) ? (arr as SavedAudio[]) : [];
+        return toList(arr);
       } catch {
         return [];
       }
@@ -271,6 +276,20 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAudioNameChange = (audioId: string, name: string) => {
+    setSavedAudios((prev) => prev.map((a) => (a.id === audioId ? { ...a, name } : a)));
+  };
+
+  const handleAudioNameBlur = async (audioId: string, name: string) => {
+    const trimmed = name.trim();
+    try {
+      await renameAudio(audioId, trimmed);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to rename audio');
+    }
+  };
+
   // Auto-save auto-reply toggle immediately (merged with AI - one toggle controls both)
   const handleAutoReplyToggle = async (enabled: boolean) => {
     const previousSettings = { ...settings };
@@ -373,9 +392,16 @@ export default function SettingsPage() {
                           className="w-full px-3 py-1.5 border border-zinc-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900 text-black dark:text-zinc-50 text-sm"
                         >
                           <option value="">Select audio…</option>
-                          {savedAudios.map((a) => (
-                            <option key={a.id} value={a.id}>Audio {a.id.slice(0, 8)}</option>
-                          ))}
+                          {savedAudios.map((a) => {
+                            const label = a.name && a.name.trim().length > 0
+                              ? a.name
+                              : `Audio ${a.id.slice(0, 8)}`;
+                            return (
+                              <option key={a.id} value={a.id}>
+                                {label}
+                              </option>
+                            );
+                          })}
                         </select>
                       ) : (
                         <textarea
@@ -452,13 +478,26 @@ export default function SettingsPage() {
           </div>
           <ul ref={audioListRef} className="space-y-2">
             {savedAudios.map((a) => (
-              <li key={a.id} className="flex items-center gap-2 py-1.5 px-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700">
-                <AudioPlayerWithAuth audioId={a.id} className="flex-1 max-w-sm h-8" />
+              <li
+                key={a.id}
+                className="flex flex-col sm:flex-row sm:items-center gap-2 py-1.5 px-3 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700"
+              >
+                <div className="flex-1 flex flex-col gap-1">
+                  <input
+                    type="text"
+                    value={a.name ?? ''}
+                    onChange={(e) => handleAudioNameChange(a.id, e.target.value)}
+                    onBlur={(e) => handleAudioNameBlur(a.id, e.target.value)}
+                    placeholder={`Audio ${a.id.slice(0, 8)}`}
+                    className="w-full px-2 py-1 rounded border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 text-sm text-black dark:text-zinc-50"
+                  />
+                  <AudioPlayerWithAuth audioId={a.id} className="max-w-sm h-8" />
+                </div>
                 <button
                   type="button"
                   onClick={() => handleDeleteAudio(a.id)}
                   disabled={audioSaving}
-                  className="p-1.5 rounded text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50"
+                  className="self-start sm:self-auto p-1.5 rounded text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50"
                   title="Delete this audio"
                   aria-label="Delete this audio"
                 >

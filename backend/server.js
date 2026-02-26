@@ -936,6 +936,42 @@ app.post('/api/settings/audio', uploadAudio.single('audio'), async (req, res) =>
   }
 });
 
+// Rename a saved audio entry (update label only)
+app.patch('/api/settings/audio/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const rawName = req.body?.name;
+    const name = typeof rawName === 'string' ? rawName.trim().slice(0, 100) : '';
+
+    const raw = await db.getSetting('saved_audios', req.userId);
+    let list = [];
+    try {
+      list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    } catch {
+      return res.status(404).json({ error: 'No audio list' });
+    }
+
+    const entry = list.find(a => a.id === id);
+    if (!entry) return res.status(404).json({ error: 'No audio' });
+    if (name) {
+      entry.name = name;
+    } else {
+      delete entry.name;
+    }
+
+    await db.setSetting('saved_audios', JSON.stringify(list), req.userId);
+    const updatedSettings = await db.getAllSettings(req.userId);
+    const savedAudios = typeof updatedSettings.saved_audios === 'string'
+      ? JSON.parse(updatedSettings.saved_audios || '[]')
+      : (updatedSettings.saved_audios || []);
+    emitToUser(req.userId, 'settings_updated', { ...updatedSettings, saved_audios: savedAudios });
+    res.json({ success: true, id, name: entry.name || '' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve saved audio for playback by id (query ?id=) or legacy single file (no id)
 app.get('/api/settings/audio/file', async (req, res) => {
   try {
