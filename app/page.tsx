@@ -7,10 +7,14 @@ import StatusBar from './components/StatusBar';
 import Dashboard from './components/Dashboard';
 import { getBotStatus } from './lib/api';
 import { useSocketContext } from './providers/SocketProvider';
+import { useAuth } from './providers/AuthProvider';
+import { useRouter } from 'next/navigation';
 
 const INITIAL_CHECK_TIMEOUT_MS = 5_000;
 
 export default function Home() {
+  const router = useRouter();
+  const { isAuthenticated, loading: authLoading } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [hasBeenConnected, setHasBeenConnected] = useState(false);
@@ -23,8 +27,13 @@ export default function Home() {
     setHasBeenConnected(true);
   }, []);
 
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) router.replace('/login');
+  }, [authLoading, isAuthenticated, router]);
+
   // Check connection status on mount (short timeout so QR screen shows quickly)
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     let cancelled = false;
     const ac = new AbortController();
     const timeoutId = setTimeout(() => ac.abort(), INITIAL_CHECK_TIMEOUT_MS);
@@ -72,10 +81,11 @@ export default function Home() {
       ac.abort();
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
-  }, []);
+  }, [authLoading, isAuthenticated]);
 
   // Listen for status updates via WebSocket
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
     if (!socket || !socketConnected) return;
 
     const handleStatusUpdate = (data: Record<string, unknown>) => {
@@ -93,13 +103,13 @@ export default function Home() {
     return () => {
       socket.off('status_update', handleStatusUpdate);
     };
-  }, [socket, socketConnected]);
+  }, [authLoading, isAuthenticated, socket, socketConnected]);
 
   // Show dashboard if connected OR reconnecting (after we've been connected once) – keeps Shield UI visible during flapping
   const showDashboard = isConnected || (isReconnecting && hasBeenConnected);
 
-  // Show loading while checking initial status
-  if (checking) {
+  // Keep splash while auth state initializes or redirecting to login.
+  if (authLoading || !isAuthenticated || checking) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
         <div className="text-center">

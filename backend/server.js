@@ -44,6 +44,9 @@ const PORT = process.env.PORT || 3002;
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
 });
@@ -256,7 +259,7 @@ io.on('connection', (socket) => {
 // Auth: skip for health and auth routes; otherwise require JWT when JWT_SECRET set
 app.use((req, res, next) => {
   const p = req.originalUrl || req.url || '';
-  if (p === '/api/health' || p.startsWith('/api/auth')) return next();
+  if (p === '/health' || p === '/api/health' || p.startsWith('/api/auth')) return next();
   return authMiddleware(req, res, next);
 });
 
