@@ -27,16 +27,35 @@ const DEFAULT_SETTINGS = {
 };
 
 export function createPool(databaseUrl) {
-  return new Pool({
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required for PostgreSQL connection');
+  }
+  const pool = new Pool({
     connectionString: databaseUrl,
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
   });
+  
+  // Add error handler for pool errors
+  pool.on('error', (err) => {
+    console.error('❌ Unexpected PostgreSQL pool error:', err.message);
+    console.error('   Stack:', err.stack);
+  });
+  
+  return pool;
 }
 
 export async function runMigrations(pool) {
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    console.error('❌ Failed to connect to PostgreSQL database:', error.message);
+    console.error('   Please check your DATABASE_URL environment variable');
+    console.error('   Error details:', error);
+    throw new Error(`Database connection failed: ${error.message}`);
+  }
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS leads (
@@ -170,9 +189,16 @@ export class PostgresDriver {
   }
 
   async _init() {
-    await runMigrations(this.pool);
-    await this._ensureDefaultSettings();
-    console.log('Connected to PostgreSQL database');
+    try {
+      await runMigrations(this.pool);
+      await this._ensureDefaultSettings();
+      console.log('✅ Connected to PostgreSQL database');
+    } catch (error) {
+      console.error('❌ Failed to initialize PostgreSQL database:', error.message);
+      console.error('   Stack:', error.stack);
+      // Re-throw to allow caller to handle
+      throw error;
+    }
   }
 
   async _ensureDefaultSettings() {

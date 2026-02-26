@@ -13,9 +13,22 @@ class Database {
   constructor(dbPathOrOptions) {
     // PostgreSQL: persistent DB and session storage when DATABASE_URL is set
     if (typeof dbPathOrOptions === 'object' && dbPathOrOptions?.databaseUrl) {
-      this.driver = new PostgresDriver(dbPathOrOptions.databaseUrl);
-      this.db = null;
-      return;
+      try {
+        this.driver = new PostgresDriver(dbPathOrOptions.databaseUrl);
+        this.db = null;
+        // Log initialization start (actual connection happens async)
+        console.log('🔄 Initializing PostgreSQL connection...');
+        // Catch initialization errors
+        this.driver.initPromise.catch((error) => {
+          console.error('❌ PostgreSQL initialization failed:', error.message);
+          console.error('   The server will continue but database operations may fail.');
+          console.error('   Please check your DATABASE_URL and ensure the database is accessible.');
+        });
+        return;
+      } catch (error) {
+        console.error('❌ Failed to create PostgreSQL driver:', error.message);
+        throw error;
+      }
     }
 
     const dbPath = typeof dbPathOrOptions === 'string' ? dbPathOrOptions : 'shield.json';

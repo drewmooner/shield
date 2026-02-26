@@ -41,11 +41,61 @@ const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
 // Bind immediately so the host sees the port open (before DB/WhatsApp init)
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/api/health', async (req, res) => {
+  const health = { status: 'ok', timestamp: new Date().toISOString() };
+  
+  // Check database connectivity if using PostgreSQL
+  if (db.driver) {
+    try {
+      await db.driver._waitInit();
+      const pool = db.getPool();
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('SELECT 1');
+          health.database = 'connected';
+        } finally {
+          client.release();
+        }
+      }
+    } catch (error) {
+      health.status = 'degraded';
+      health.database = 'error';
+      health.databaseError = error.message;
+    }
+  } else {
+    health.database = 'json_file';
+  }
+  
+  res.json(health);
 });
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  const health = { status: 'ok', timestamp: new Date().toISOString() };
+  
+  // Check database connectivity if using PostgreSQL
+  if (db.driver) {
+    try {
+      await db.driver._waitInit();
+      const pool = db.getPool();
+      if (pool) {
+        const client = await pool.connect();
+        try {
+          await client.query('SELECT 1');
+          health.database = 'connected';
+        } finally {
+          client.release();
+        }
+      }
+    } catch (error) {
+      health.status = 'degraded';
+      health.database = 'error';
+      health.databaseError = error.message;
+    }
+  } else {
+    health.database = 'json_file';
+  }
+  
+  res.json(health);
 });
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
@@ -101,9 +151,20 @@ app.use(express.json());
 app.use(express.static(join(__dirname, '../public')));
 
 // Initialize database (PostgreSQL when DATABASE_URL set, else JSON file)
-const db = process.env.DATABASE_URL
-  ? new Database({ databaseUrl: process.env.DATABASE_URL })
-  : new Database(process.env.DB_PATH || 'shield.json');
+let db;
+try {
+  if (process.env.DATABASE_URL) {
+    console.log('🔄 Initializing database with PostgreSQL...');
+    db = new Database({ databaseUrl: process.env.DATABASE_URL });
+  } else {
+    console.log('🔄 Initializing database with JSON file...');
+    db = new Database(process.env.DB_PATH || 'shield.json');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize database:', error.message);
+  console.error('   Stack:', error.stack);
+  process.exit(1);
+}
 
 // ----- Auth: JWT optional; when JWT_SECRET set, multi-tenant per user -----
 function authMiddleware(req, res, next) {
