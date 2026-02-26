@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import ThemeProvider from "./components/ThemeProvider";
 import ErrorBoundary from "./components/ErrorBoundary";
+import AuthGuard from "./components/AuthGuard";
 import { AuthProvider } from "./providers/AuthProvider";
 import { SocketProvider } from "./providers/SocketProvider";
 
@@ -35,7 +36,7 @@ export default function RootLayout({
           <ThemeProvider>
             <AuthProvider>
               <SocketProvider>
-                {children}
+                <AuthGuard>{children}</AuthGuard>
               </SocketProvider>
             </AuthProvider>
           </ThemeProvider>
