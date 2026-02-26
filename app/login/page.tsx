@@ -96,11 +96,6 @@ export default function LoginPage() {
               Sign up
             </Link>
           </p>
-          <p className="mt-4 text-center">
-            <Link href="/" className="text-sm text-zinc-500 dark:text-zinc-400 hover:underline">
-              ← Back to app
-            </Link>
-          </p>
         </div>
       </div>
     </div>
