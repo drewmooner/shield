@@ -115,9 +115,42 @@ const CORS_ORIGINS = [
 
 function isOriginAllowed(origin, allowedOrigins) {
   if (!origin) return true;
-  if (process.env.NODE_ENV !== 'production' || allowedOrigins.length === 0) return true;
-  const normalized = allowedOrigins.map(a => a.replace(/^https?:\/\//, ''));
-  return normalized.some(allowed => origin.replace(/^https?:\/\//, '').includes(allowed) || origin === allowed || allowed === '*');
+  
+  // In development, allow all origins
+  if (process.env.NODE_ENV !== 'production') return true;
+  
+  // Allow all Vercel preview and production URLs (*.vercel.app)
+  if (origin.includes('.vercel.app')) {
+    return true;
+  }
+  
+  // Allow exact matches
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+  
+  // Allow wildcard
+  if (allowedOrigins.includes('*')) {
+    return true;
+  }
+  
+  // Check if origin matches any allowed origin (subdomain or path matching)
+  const originDomain = origin.replace(/^https?:\/\//, '').split('/')[0];
+  const normalized = allowedOrigins.map(a => a.replace(/^https?:\/\//, '').split('/')[0]);
+  
+  // Check exact domain match
+  if (normalized.includes(originDomain)) {
+    return true;
+  }
+  
+  // Check if origin is a subdomain of any allowed origin
+  for (const allowed of normalized) {
+    if (originDomain.endsWith(`.${allowed}`) || allowed.endsWith(`.${originDomain}`)) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 // Initialize Socket.IO with CORS
