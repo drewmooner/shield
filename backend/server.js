@@ -1009,16 +1009,122 @@ httpServer.on('error', (error) => {
   }
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing database...');
-  await db.close();
-  process.exit(0);
+// Graceful shutdown handler
+let isShuttingDown = false;
+const SHUTDOWN_TIMEOUT = 30000; // 30 seconds max for shutdown
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) {
+    console.log(`⚠️ ${signal} received again, forcing exit...`);
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  console.log(`\n🛑 ${signal} received, starting graceful shutdown...`);
+  
+  // Set a timeout to force exit if shutdown takes too long
+  const forceExitTimer = setTimeout(() => {
+    console.error('❌ Shutdown timeout exceeded, forcing exit...');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT);
+  
+  try {
+    // Close HTTP server (stops accepting new connections)
+    console.log('   Closing HTTP server...');
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        console.log('   ⚠️ HTTP server close timeout, continuing...');
+        resolve();
+      }, 5000);
+      
+      httpServer.close(() => {
+        clearTimeout(timeout);
+        console.log('   ✅ HTTP server closed');
+        resolve();
+      });
+    });
+    
+    // Close Socket.IO server
+    console.log('   Closing Socket.IO server...');
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        console.log('   ⚠️ Socket.IO close timeout, continuing...');
+        resolve();
+      }, 5000);
+      
+      io.close(() => {
+        clearTimeout(timeout);
+        console.log('   ✅ Socket.IO server closed');
+        resolve();
+      });
+    });
+    
+    // Close all WhatsApp handlers (with timeout per handler)
+    console.log('   Closing WhatsApp handlers...');
+    const disconnectPromises = [];
+    for (const [userId, handler] of userHandlers.entries()) {
+      const disconnectPromise = (async () => {
+        try {
+          if (handler.whatsapp) {
+            // Set a timeout for each disconnect (10 seconds max)
+            await Promise.race([
+              handler.whatsapp.disconnect().catch(err => {
+                console.error(`   ⚠️ Error disconnecting WhatsApp for ${userId}:`, err.message);
+              }),
+              new Promise(resolve => setTimeout(() => {
+                console.log(`   ⚠️ WhatsApp disconnect timeout for ${userId}, continuing...`);
+                resolve();
+              }, 10000))
+            ]);
+            console.log(`   ✅ WhatsApp handler closed for user: ${userId}`);
+          }
+        } catch (error) {
+          console.error(`   ⚠️ Error closing WhatsApp handler for ${userId}:`, error.message);
+        }
+      })();
+      disconnectPromises.push(disconnectPromise);
+    }
+    await Promise.all(disconnectPromises);
+    
+    // Close database connections
+    console.log('   Closing database connections...');
+    await Promise.race([
+      db.close(),
+      new Promise(resolve => setTimeout(() => {
+        console.log('   ⚠️ Database close timeout, continuing...');
+        resolve();
+      }, 5000))
+    ]);
+    console.log('   ✅ Database closed');
+    
+    clearTimeout(forceExitTimer);
+    console.log('✅ Graceful shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(forceExitTimer);
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+}
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  gracefulShutdown('uncaughtException').catch(() => process.exit(1));
 });
 
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, closing database...');
-  await db.close();
-  process.exit(0);
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Don't exit on unhandled rejection in production, but log it
+  if (process.env.NODE_ENV === 'production') {
+    console.error('   Continuing in production mode...');
+  } else {
+    gracefulShutdown('unhandledRejection').catch(() => process.exit(1));
+  }
 });
 
