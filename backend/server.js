@@ -114,23 +114,31 @@ const CORS_ORIGINS = [
 ].filter(Boolean);
 
 function isOriginAllowed(origin, allowedOrigins) {
-  if (!origin) return true;
+  if (!origin) {
+    return true;
+  }
   
   // In development, allow all origins
-  if (process.env.NODE_ENV !== 'production') return true;
+  if (process.env.NODE_ENV !== 'production') {
+    return true;
+  }
   
   // Allow all Vercel preview and production URLs (*.vercel.app)
+  // Check both with and without protocol
   if (origin.includes('.vercel.app')) {
+    console.log(`✅ CORS allowed Vercel origin: ${origin}`);
     return true;
   }
   
   // Allow exact matches
   if (allowedOrigins.includes(origin)) {
+    console.log(`✅ CORS allowed exact match: ${origin}`);
     return true;
   }
   
   // Allow wildcard
   if (allowedOrigins.includes('*')) {
+    console.log(`✅ CORS allowed wildcard: ${origin}`);
     return true;
   }
   
@@ -140,16 +148,21 @@ function isOriginAllowed(origin, allowedOrigins) {
   
   // Check exact domain match
   if (normalized.includes(originDomain)) {
+    console.log(`✅ CORS allowed domain match: ${origin}`);
     return true;
   }
   
   // Check if origin is a subdomain of any allowed origin
   for (const allowed of normalized) {
     if (originDomain.endsWith(`.${allowed}`) || allowed.endsWith(`.${originDomain}`)) {
+      console.log(`✅ CORS allowed subdomain match: ${origin} (${allowed})`);
       return true;
     }
   }
   
+  console.log(`❌ CORS blocked origin: ${origin}`);
+  console.log(`   Allowed origins:`, allowedOrigins);
+  console.log(`   NODE_ENV:`, process.env.NODE_ENV);
   return false;
 }
 
@@ -157,10 +170,17 @@ function isOriginAllowed(origin, allowedOrigins) {
 const io = new Server(httpServer, {
   cors: {
     origin: function(origin, callback) {
+      // Socket.IO may pass undefined origin for same-origin requests
+      if (!origin) {
+        console.log('✅ CORS allowed (no origin - same origin request)');
+        return callback(null, true);
+      }
+      
       if (isOriginAllowed(origin, CORS_ORIGINS)) {
         return callback(null, true);
       }
       console.log('⚠️ CORS blocked WebSocket origin:', origin);
+      console.log('   Allowed origins:', CORS_ORIGINS);
       callback(new Error('CORS not allowed'), false);
     },
     credentials: true,
