@@ -208,23 +208,42 @@ app.use(express.static(join(__dirname, '../public')));
 let db;
 try {
   // Debug: Check if DATABASE_URL is set (without logging the actual URL for security)
-  const hasDatabaseUrl = !!process.env.DATABASE_URL;
-  const databaseUrlLength = process.env.DATABASE_URL ? process.env.DATABASE_URL.length : 0;
+  const rawDatabaseUrl = process.env.DATABASE_URL;
+  const hasDatabaseUrl = !!(rawDatabaseUrl && rawDatabaseUrl.trim());
+  const databaseUrlLength = rawDatabaseUrl ? rawDatabaseUrl.length : 0;
+  const isWhitespaceOnly = rawDatabaseUrl && !rawDatabaseUrl.trim();
+  const existsInEnv = 'DATABASE_URL' in process.env;
   
   console.log('🔍 Database configuration check:');
-  console.log(`   DATABASE_URL is set: ${hasDatabaseUrl}`);
-  if (hasDatabaseUrl) {
+  console.log(`   DATABASE_URL key exists: ${existsInEnv}`);
+  console.log(`   DATABASE_URL value type: ${typeof rawDatabaseUrl}`);
+  console.log(`   DATABASE_URL is non-empty: ${hasDatabaseUrl}`);
+  if (rawDatabaseUrl !== undefined) {
     console.log(`   DATABASE_URL length: ${databaseUrlLength} characters`);
-    // Show first few chars and last few chars for debugging (not the full URL)
-    const url = process.env.DATABASE_URL;
-    const preview = url.length > 20 ? `${url.substring(0, 10)}...${url.substring(url.length - 10)}` : '***';
-    console.log(`   DATABASE_URL preview: ${preview}`);
+    if (isWhitespaceOnly) {
+      console.log('   ⚠️ DATABASE_URL is set but contains only whitespace!');
+      console.log('   💡 Please set a valid PostgreSQL connection string in Railway variables');
+    } else if (rawDatabaseUrl === '') {
+      console.log('   ⚠️ DATABASE_URL is set but is an empty string!');
+      console.log('   💡 Please set a valid PostgreSQL connection string in Railway variables');
+    } else {
+      // Show first few chars and last few chars for debugging (not the full URL)
+      const url = rawDatabaseUrl.trim();
+      const preview = url.length > 20 ? `${url.substring(0, 10)}...${url.substring(url.length - 10)}` : '***';
+      console.log(`   DATABASE_URL preview: ${preview}`);
+    }
   } else {
     console.log('   ⚠️ DATABASE_URL not found in environment variables');
-    console.log('   Available env vars:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('DB')).join(', ') || 'none');
+  }
+  const dbRelatedVars = Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('DB'));
+  console.log('   Available env vars:', dbRelatedVars.join(', ') || 'none');
+  if (dbRelatedVars.length > 0 && !hasDatabaseUrl) {
+    console.log('   💡 DATABASE_URL exists but appears to be empty or invalid');
+    console.log('   💡 In Railway: Go to Variables → Check DATABASE_URL has a value');
+    console.log('   💡 Value should be: postgresql://user:password@host:port/database');
   }
   
-  if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
+  if (hasDatabaseUrl) {
     console.log('🔄 Initializing database with PostgreSQL...');
     db = new Database({ databaseUrl: process.env.DATABASE_URL.trim() });
   } else {
