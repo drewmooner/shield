@@ -8,7 +8,8 @@
     "node": ">=18 <22"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node start.js",
+    "start:direct": "node server.js",
     "dev": "node --watch server.js",
     "build": "npm ci || npm install"
   },
