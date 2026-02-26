@@ -49,7 +49,9 @@ export function createPool(databaseUrl) {
 export async function runMigrations(pool) {
   let client;
   try {
+    console.log('🔄 Connecting to PostgreSQL to run migrations...');
     client = await pool.connect();
+    console.log('✅ Connected to PostgreSQL, running migrations...');
   } catch (error) {
     console.error('❌ Failed to connect to PostgreSQL database:', error.message);
     console.error('   Please check your DATABASE_URL environment variable');
@@ -57,6 +59,7 @@ export async function runMigrations(pool) {
     throw new Error(`Database connection failed: ${error.message}`);
   }
   try {
+    console.log('📊 Creating tables: leads, messages, settings, bot_logs, auth_creds, auth_keys, users...');
     await client.query(`
       CREATE TABLE IF NOT EXISTS leads (
         id TEXT PRIMARY KEY,
@@ -112,7 +115,10 @@ export async function runMigrations(pool) {
       );
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     `);
+    console.log('✅ Base tables created');
+    
     // Add client_id so we know who owns each record (saved alongside data; used on refresh)
+    console.log('📊 Adding client_id columns for multi-tenant support...');
     await client.query(`
       ALTER TABLE leads ADD COLUMN IF NOT EXISTS client_id TEXT DEFAULT 'default';
       UPDATE leads SET client_id = 'default' WHERE client_id IS NULL;
@@ -138,9 +144,11 @@ export async function runMigrations(pool) {
     try {
       await client.query(`ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey`);
       await client.query(`ALTER TABLE settings ADD PRIMARY KEY (client_id, key)`);
+      console.log('✅ Settings table primary key updated');
     } catch (e) {
       if (!e.message?.includes('already exists')) throw e;
     }
+    console.log('✅ Migrations completed successfully');
   } finally {
     client.release();
   }
