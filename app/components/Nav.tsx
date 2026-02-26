@@ -2,13 +2,17 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../providers/AuthProvider';
 
 export default function Nav() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const { user, isAuthenticated, logout } = useAuth();
+
+  useEffect(() => {
+    setIsOpen(false);
+  }, [pathname]);
 
   const links = [
     { href: '/', label: 'Dashboard' },
@@ -20,7 +24,7 @@ export default function Nav() {
       {/* Mobile menu button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg"
+        className="lg:hidden fixed top-3 right-3 z-50 p-2 bg-white/95 dark:bg-zinc-900/95 border border-zinc-200 dark:border-zinc-800 rounded-lg shadow-sm backdrop-blur"
         aria-label="Toggle menu"
       >
         <svg className="w-6 h-6 text-black dark:text-zinc-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -41,17 +45,27 @@ export default function Nav() {
       )}
 
       {/* Sidebar */}
-      <nav className={`bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 w-48 min-h-screen fixed lg:static inset-y-0 left-0 z-40 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+      <nav className={`bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 w-64 lg:w-48 min-h-screen fixed lg:static inset-y-0 left-0 z-40 shadow-xl lg:shadow-none transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
         isOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="p-4">
-          <h1 className="text-xl font-bold mb-6 text-black dark:text-zinc-50">Shield</h1>
+        <div className="p-4 pt-6 lg:pt-4">
+          <div className="mb-6 flex items-center justify-between">
+            <h1 className="text-xl font-bold text-black dark:text-zinc-50">Shield</h1>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="lg:hidden p-1.5 rounded-md text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              aria-label="Close menu"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
           <ul className="space-y-2">
             {links.map((link) => (
               <li key={link.href}>
                 <Link
                   href={link.href}
-                  onClick={() => setIsOpen(false)}
                   className={`block px-4 py-2 rounded-lg transition-colors ${
                     pathname === link.href
                       ? 'bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black'
@@ -79,7 +93,6 @@ export default function Nav() {
             ) : (
               <Link
                 href="/login"
-                onClick={() => setIsOpen(false)}
                 className="block px-4 py-2 rounded-lg text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
                 Log in
