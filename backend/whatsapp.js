@@ -313,16 +313,22 @@ class WhatsAppHandler {
         const connection = update?.connection;
         if (connection === 'open') {
           this.skipContactLeadCreationUntil = Date.now() + 60000; // Prevent contacts from repopulating
-          try {
-            const { leadCount, messageCount } = await this.database.clearAll(this.cid);
-            console.log(`   🧹 Cleared ${leadCount} leads, ${messageCount} messages - fresh start`);
-            this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount }, this.cid);
-            if (this.io) {
-              this.io.emit('leads_changed');
-              this.io.emit('data_cleared'); // So UI can clear local state and show empty
+          const shouldClear =
+            (process.env.CLEAR_ON_CONNECT || '').toLowerCase() === 'true';
+          if (shouldClear) {
+            try {
+              const { leadCount, messageCount } = await this.database.clearAll(this.cid);
+              console.log(`   🧹 Cleared ${leadCount} leads, ${messageCount} messages - fresh start`);
+              this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount }, this.cid);
+              if (this.io) {
+                this.io.emit('leads_changed');
+                this.io.emit('data_cleared'); // So UI can clear local state and show empty
+              }
+            } catch (err) {
+              console.error('   ⚠️ Clear on fresh connect failed:', err.message);
             }
-          } catch (err) {
-            console.error('   ⚠️ Clear on fresh connect failed:', err.message);
+          } else {
+            console.log('   ⏭️ Skipping clearAll on connect (CLEAR_ON_CONNECT is not true)');
           }
           this.connectionTime = Date.now();
           this.isConnected = true;

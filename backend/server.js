@@ -865,6 +865,35 @@ app.get('/api/settings', async (req, res) => {
     } else if (!Array.isArray(safeSettings.saved_audios)) {
       safeSettings.saved_audios = [];
     }
+
+    // Prune audio entries whose files no longer exist (e.g. after ephemeral redeploys)
+    if (Array.isArray(safeSettings.saved_audios) && safeSettings.saved_audios.length > 0) {
+      const originalList = safeSettings.saved_audios;
+      const prunedList = [];
+      let changed = false;
+      for (const entry of originalList) {
+        if (!entry || typeof entry !== 'object') continue;
+        const p = entry.path;
+        if (!p || typeof p !== 'string') continue;
+        const fullPath = join(dataDir, normalizeAudioPath(p));
+        if (existsSync(fullPath)) {
+          prunedList.push(entry);
+        } else {
+          changed = true;
+        }
+      }
+      if (changed) {
+        safeSettings.saved_audios = prunedList;
+        try {
+          await db.setSetting('saved_audios', JSON.stringify(prunedList), req.userId);
+          await db.addLog('saved_audios_pruned_missing_files', {
+            removed: originalList.length - prunedList.length
+          }, req.userId);
+        } catch (_) {
+          // If pruning persistence fails, continue with in-memory pruned list
+        }
+      }
+    }
     res.json({ ...safeSettings, product_info: productInfo });
   } catch (error) {
     res.status(500).json({ error: error.message });
