@@ -931,9 +931,15 @@ app.post('/api/settings', async (req, res) => {
 
     await db.addLog('settings_updated', { timestamp: new Date().toISOString() }, req.userId);
     
-    // Emit WebSocket event for settings update
+    // Emit WebSocket event for settings update (merge delay defaults so UI always has them)
     const updatedSettings = await db.getAllSettings(req.userId);
     const updatedProductInfo = await db.getProductInfo(req.userId);
+    const delayDefaults = { min_delay_seconds: '3', max_delay_seconds: '10', view_delay_min_seconds: '1', view_delay_max_seconds: '5' };
+    for (const [k, v] of Object.entries(delayDefaults)) {
+      if (updatedSettings[k] === undefined || updatedSettings[k] === null || updatedSettings[k] === '') {
+        updatedSettings[k] = v;
+      }
+    }
     emitToUser(req.userId, 'settings_updated', { 
       ...updatedSettings, 
       product_info: updatedProductInfo 

@@ -318,7 +318,7 @@ class WhatsAppHandler {
           if (shouldClear) {
             try {
               const { leadCount, messageCount } = await this.database.clearAll(this.cid);
-              console.log(`   🧹 Cleared ${leadCount} leads, ${messageCount} messages - fresh start`);
+              console.log(`   🧹 CLEAR_ON_CONNECT=true: Cleared ${leadCount} leads, ${messageCount} messages. Set CLEAR_ON_CONNECT=false (or unset) in Railway to keep messages across deploys.`);
               this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount }, this.cid);
               if (this.io) {
                 this.io.emit('leads_changed');
@@ -328,7 +328,7 @@ class WhatsAppHandler {
               console.error('   ⚠️ Clear on fresh connect failed:', err.message);
             }
           } else {
-            console.log('   ⏭️ Skipping clearAll on connect (CLEAR_ON_CONNECT is not true)');
+            console.log('   ✅ Messages preserved across reconnect/deploy (CLEAR_ON_CONNECT is not set).');
           }
           this.connectionTime = Date.now();
           this.isConnected = true;

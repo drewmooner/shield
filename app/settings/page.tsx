@@ -73,8 +73,19 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [keywordSaveStatus, setKeywordSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [delayMin, setDelayMin] = useState<string>('3');
+  const [delayMax, setDelayMax] = useState<string>('10');
+  const [viewDelayMin, setViewDelayMin] = useState<string>('1');
+  const [viewDelayMax, setViewDelayMax] = useState<string>('5');
   const { socket, connected } = useSocketContext();
   const { user, isAuthenticated, logout } = useAuth();
+
+  function applyDelayFromData(data: Record<string, unknown>) {
+    setDelayMin(String(Number(data.min_delay_seconds) || 3));
+    setDelayMax(String(Number(data.max_delay_seconds) || 10));
+    setViewDelayMin(String(Number(data.view_delay_min_seconds) || 1));
+    setViewDelayMax(String(Number(data.view_delay_max_seconds) || 5));
+  }
 
   useEffect(() => {
     loadSettings();
@@ -88,6 +99,7 @@ export default function SettingsPage() {
       setSettings(data);
       setKeywordReplies(parseKeywordReplies(data.keyword_replies));
       setSavedAudios(parseSavedAudios(data.saved_audios));
+      applyDelayFromData(data);
     };
 
     socket.on('settings_updated', handleSettingsUpdate);
@@ -120,6 +132,7 @@ export default function SettingsPage() {
       setSettings(data);
       setKeywordReplies(parseKeywordReplies(data.keyword_replies));
       setSavedAudios(parseSavedAudios(data.saved_audios));
+      applyDelayFromData(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -132,10 +145,10 @@ export default function SettingsPage() {
     try {
       // Don't send API key or model to backend (they're managed via environment variables)
       const { openrouter_api_key, ai_model, ...settingsToSave } = settings;
-      const minDelay = Number(settings.min_delay_seconds) || 3;
-      const maxDelay = Number(settings.max_delay_seconds) || 10;
-      const viewMin = Number(settings.view_delay_min_seconds) || 1;
-      const viewMax = Number(settings.view_delay_max_seconds) || 5;
+      const minDelay = Number(delayMin) || 3;
+      const maxDelay = Number(delayMax) || 10;
+      const viewMin = Number(viewDelayMin) || 1;
+      const viewMax = Number(viewDelayMax) || 5;
       await updateSettings({
         ...settingsToSave,
         keyword_replies: keywordReplies,
@@ -529,10 +542,8 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={Number(settings.min_delay_seconds) || 3}
-                onChange={(e) =>
-                  setSettings({ ...settings, min_delay_seconds: e.target.value })
-                }
+                value={delayMin}
+                onChange={(e) => setDelayMin(e.target.value)}
                 className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
               />
             </div>
@@ -543,10 +554,8 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={Number(settings.max_delay_seconds) || 10}
-                onChange={(e) =>
-                  setSettings({ ...settings, max_delay_seconds: e.target.value })
-                }
+                value={delayMax}
+                onChange={(e) => setDelayMax(e.target.value)}
                 className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
               />
             </div>
@@ -557,10 +566,8 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={Number(settings.view_delay_min_seconds) || 1}
-                onChange={(e) =>
-                  setSettings({ ...settings, view_delay_min_seconds: e.target.value })
-                }
+                value={viewDelayMin}
+                onChange={(e) => setViewDelayMin(e.target.value)}
                 className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
               />
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Before marking message as read</p>
@@ -572,10 +579,8 @@ export default function SettingsPage() {
               <input
                 type="number"
                 min={0}
-                value={Number(settings.view_delay_max_seconds) || 5}
-                onChange={(e) =>
-                  setSettings({ ...settings, view_delay_max_seconds: e.target.value })
-                }
+                value={viewDelayMax}
+                onChange={(e) => setViewDelayMax(e.target.value)}
                 className="w-full px-4 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-900 text-black dark:text-zinc-50"
               />
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Before marking message as read</p>
