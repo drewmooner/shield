@@ -894,6 +894,15 @@ app.get('/api/settings', async (req, res) => {
         }
       }
     }
+
+    // Ensure delay settings always have values so the UI can show and persist them
+    const delayDefaults = { min_delay_seconds: '3', max_delay_seconds: '10', view_delay_min_seconds: '1', view_delay_max_seconds: '5' };
+    for (const [k, v] of Object.entries(delayDefaults)) {
+      if (safeSettings[k] === undefined || safeSettings[k] === null || safeSettings[k] === '') {
+        safeSettings[k] = v;
+      }
+    }
+
     res.json({ ...safeSettings, product_info: productInfo });
   } catch (error) {
     res.status(500).json({ error: error.message });

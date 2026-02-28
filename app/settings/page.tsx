@@ -132,9 +132,17 @@ export default function SettingsPage() {
     try {
       // Don't send API key or model to backend (they're managed via environment variables)
       const { openrouter_api_key, ai_model, ...settingsToSave } = settings;
+      const minDelay = Number(settings.min_delay_seconds) || 3;
+      const maxDelay = Number(settings.max_delay_seconds) || 10;
+      const viewMin = Number(settings.view_delay_min_seconds) || 1;
+      const viewMax = Number(settings.view_delay_max_seconds) || 5;
       await updateSettings({
         ...settingsToSave,
         keyword_replies: keywordReplies,
+        min_delay_seconds: minDelay,
+        max_delay_seconds: maxDelay,
+        view_delay_min_seconds: viewMin,
+        view_delay_max_seconds: viewMax,
       });
       console.log('✅ Settings saved');
     } catch (err) {
