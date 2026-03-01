@@ -62,18 +62,21 @@ class WhatsAppHandler {
   }
 
   emit(eventName, data) {
-    // Prefer direct io.emit() if available (more reliable)
+    // Multi-tenant: prefer eventEmitter so events go only to this account's sockets (io.to(`user:${uid}`))
+    if (this.eventEmitter) {
+      try {
+        this.eventEmitter(eventName, data);
+        return;
+      } catch (error) {
+        console.error(`❌ Error emitting ${eventName}:`, error);
+      }
+    }
     if (this.io) {
       try {
         this.io.emit(eventName, data);
-        return;
       } catch (error) {
         console.error(`❌ Error emitting via io:`, error);
       }
-    }
-    // Fallback to eventEmitter callback
-    if (this.eventEmitter) {
-      this.eventEmitter(eventName, data);
     }
   }
 
@@ -320,9 +323,9 @@ class WhatsAppHandler {
               const { leadCount, messageCount } = await this.database.clearAll(this.cid);
               console.log(`   🧹 CLEAR_ON_CONNECT=true: Cleared ${leadCount} leads, ${messageCount} messages. Set CLEAR_ON_CONNECT=false (or unset) in Railway to keep messages across deploys.`);
               this.database.addLog('cleared_on_fresh_connect', { leadCount, messageCount }, this.cid);
-              if (this.io) {
-                this.io.emit('leads_changed');
-                this.io.emit('data_cleared'); // So UI can clear local state and show empty
+              if (this.eventEmitter || this.io) {
+                this.emit('leads_changed');
+                this.emit('data_cleared'); // So UI can clear local state and show empty
               }
             } catch (err) {
               console.error('   ⚠️ Clear on fresh connect failed:', err.message);
@@ -440,9 +443,8 @@ class WhatsAppHandler {
       const error = lastDisconnect?.error;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      // Reset connection time on disconnect - next connection will clear messages
       this.connectionTime = null;
-      console.log('   🔄 Connection time reset - next connection will start fresh');
+      console.log('   🔄 Connection time reset (clearing only happens on next connect if CLEAR_ON_CONNECT=true)');
 
       console.log('\n🔴 Connection closed:');
       console.log('   Status code:', statusCode);
@@ -770,7 +772,8 @@ class WhatsAppHandler {
     let skippedCount = 0;
     let duplicateCount = 0;
 
-    console.log(`\n🔄 Processing ${m.messages.length} messages from ${m.type} event...`);
+    const botPaused = await this.database.getSetting('bot_paused', this.cid) === 'true';
+    console.log(`\n🔄 Processing ${m.messages.length} messages from ${m.type} event...${botPaused ? ' (bot paused — minimal logging)' : ''}`);
 
     for (const msg of m.messages) {
       try {
@@ -794,7 +797,7 @@ class WhatsAppHandler {
           ? new Date(msg.messageTimestamp * 1000) 
           : new Date();
         
-        console.log(`   ✅ Processing message (type: ${m.type}, timestamp: ${messageTimestamp.toISOString()}, fromMe: ${msg.key.fromMe}, hasTimestamp: ${hasTimestamp})`);
+        if (!botPaused) console.log(`   ✅ Processing message (type: ${m.type}, timestamp: ${messageTimestamp.toISOString()}, fromMe: ${msg.key.fromMe}, hasTimestamp: ${hasTimestamp})`);
 
         const jid = msg.key.remoteJid;
 
@@ -812,11 +815,12 @@ class WhatsAppHandler {
           continue;
         }
 
-        // Log message details for debugging
-        console.log(`   📱 Message details:`);
-        console.log(`      JID: ${jid}`);
-        console.log(`      FromMe: ${msg.key.fromMe}`);
-        console.log(`      MessageTimestamp: ${msg.messageTimestamp || 'none'}`);
+        if (!botPaused) {
+          console.log(`   📱 Message details:`);
+          console.log(`      JID: ${jid}`);
+          console.log(`      FromMe: ${msg.key.fromMe}`);
+          console.log(`      MessageTimestamp: ${msg.messageTimestamp || 'none'}`);
+        }
 
         // Extract phone number (handle both @s.whatsapp.net and @lid formats)
         // JID format: phone@s.whatsapp.net or phone:12@s.whatsapp.net or phone:agentId@lid — strip device so one lead per contact
@@ -843,7 +847,7 @@ class WhatsAppHandler {
           continue;
         }
         
-        console.log(`   📱 Processing message from: ${normalizedPhone} (JID: ${jid})`);
+        if (!botPaused) console.log(`   📱 Processing message from: ${normalizedPhone} (JID: ${jid})`);
 
         // Unwrap special message types
         let messageContent = msg.message;
@@ -884,7 +888,7 @@ class WhatsAppHandler {
           }
         }
 
-        console.log(`   📝 Message text: "${messageText}"`);
+        if (!botPaused) console.log(`   📝 Message text: "${messageText}"`);
 
         const getContactName = (contactJid) => {
           const c = this.sock?.contacts?.[contactJid];
@@ -954,7 +958,7 @@ class WhatsAppHandler {
           }
         }
 
-        if (didMerge && this.io) this.io.emit('leads_changed');
+        if (didMerge) this.emit('leads_changed');
 
         // Outgoing: retry pushName with canonical JID (lead may have phone with country code)
         if (msg.key.fromMe && !pushName) {
@@ -1023,6 +1027,9 @@ class WhatsAppHandler {
           }
         }
 
+        // When paused: don't store messages, don't log to bot_logs, don't emit — saves DB and credits. Resumes when bot is resumed.
+        if (botPaused) continue;
+
         // Check if message already exists (prevent duplicates)
         const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
         const msgTimestamp = msg.messageTimestamp 
@@ -1038,22 +1045,22 @@ class WhatsAppHandler {
                               m.sender === sender &&
                               timeDiff < 30000; // Within 30 seconds (more lenient)
           
-          if (isDuplicate) {
+          if (isDuplicate && !botPaused) {
             console.log(`   🔍 Found duplicate: content match, sender match, time diff: ${Math.round(timeDiff/1000)}s`);
           }
           return isDuplicate;
         });
         
         if (msgExists) {
-          console.log('   ⏭️ Skipping duplicate message');
+          if (!botPaused) console.log('   ⏭️ Skipping duplicate message');
           duplicateCount++;
           continue;
         }
         
-        console.log(`   ✅ Message is new - not a duplicate`);
+        if (!botPaused) console.log(`   ✅ Message is new - not a duplicate`);
 
         // Store message
-        console.log('   💾 Storing message...');
+        if (!botPaused) console.log('   💾 Storing message...');
         const savedMessage = await this.database.createMessage(
           lead.id, 
           sender, 
@@ -1064,52 +1071,41 @@ class WhatsAppHandler {
         );
         
         storedCount++;
-        console.log(`   ✅ Message stored successfully!`);
+        if (!botPaused) console.log(`   ✅ Message stored successfully!`);
 
         // Always refresh lead to get latest data (including contact info) before emitting WebSocket event
         const updatedLead = await this.database.getLead(lead.id, this.cid);
-        console.log(`   📋 Lead data: ${updatedLead.contact_name || updatedLead.phone_number} (${updatedLead.phone_number})`);
-        console.log(`   📋 Lead JID: ${updatedLead.jid || 'none'}`);
-
-        // Emit WebSocket event for new message (both incoming and outgoing)
-        // This includes messages sent from main phone (fromMe: false) and messages sent by Shield (fromMe: true)
-        console.log(`   📡 Preparing WebSocket event: new_message`);
-        console.log(`      - Sender: ${sender} (fromMe: ${msg.key.fromMe})`);
-        console.log(`      - LeadId: ${lead.id}`);
-        console.log(`      - Contact: ${updatedLead.contact_name || updatedLead.phone_number}`);
-        console.log(`      - Phone: ${updatedLead.phone_number}`);
-        console.log(`      - Message: "${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}"`);
+        if (!botPaused) {
+          console.log(`   📋 Lead data: ${updatedLead.contact_name || updatedLead.phone_number} (${updatedLead.phone_number})`);
+          console.log(`   📋 Lead JID: ${updatedLead.jid || 'none'}`);
+          console.log(`   📡 Preparing WebSocket event: new_message`);
+          console.log(`      - Sender: ${sender} (fromMe: ${msg.key.fromMe})`);
+          console.log(`      - LeadId: ${lead.id}`);
+          console.log(`      - Contact: ${updatedLead.contact_name || updatedLead.phone_number}`);
+          console.log(`      - Message: "${messageText.substring(0, 50)}${messageText.length > 50 ? '...' : ''}"`);
+        }
         
-        // Emit WebSocket event for new message (both incoming and outgoing)
-        if (this.io) {
-          try {
-            const eventData = {
-              leadId: lead.id,
-              message: {
-                id: savedMessage.id,
-                lead_id: lead.id,
-                sender,
-                content: messageText,
-                status: sender === 'shield' ? 'replied' : 'pending',
-                timestamp: msgTimestamp
-              },
-              lead: updatedLead
-            };
-            
-            // ✅ Use io.emit to broadcast to ALL connected browser clients
-            console.log(`   📤 Emitting to ${this.io.sockets.sockets.size} connected clients`);
-            console.log(`   📤 Event data:`, JSON.stringify(eventData, null, 2));
-            this.io.emit('new_message', eventData);
-            this.io.emit('leads_changed');
-            console.log(`   ✅ WebSocket events emitted via io.emit()`);
-          } catch (emitError) {
-            console.error(`   ❌ Error emitting WebSocket events:`, emitError);
-            console.error(`   Stack:`, emitError.stack);
-          }
-        } else {
-          console.error('   ❌ CRITICAL: this.io is null - WebSocket events will NOT reach frontend!');
-          console.error('   ❌ Make sure you called whatsapp.setIO(io) in server.js');
-          console.error('   ⚠️ Message stored but frontend will not be notified until io is set');
+        // Emit WebSocket event for new message (multi-tenant: only this account's sockets)
+        try {
+          const eventData = {
+            leadId: lead.id,
+            message: {
+              id: savedMessage.id,
+              lead_id: lead.id,
+              sender,
+              content: messageText,
+              status: sender === 'shield' ? 'replied' : 'pending',
+              timestamp: msgTimestamp
+            },
+            lead: updatedLead
+          };
+          if (!botPaused) console.log(`   📤 Emitting new_message to this account only`);
+          this.emit('new_message', eventData);
+          this.emit('leads_changed');
+          if (!botPaused) console.log(`   ✅ WebSocket events emitted`);
+        } catch (emitError) {
+          console.error(`   ❌ Error emitting WebSocket events:`, emitError);
+          console.error(`   Stack:`, emitError.stack);
         }
 
         // Only auto-reply for NEW incoming messages from users (not historical, not from us)
@@ -1125,13 +1121,13 @@ class WhatsAppHandler {
             const keywordReply = await this.getKeywordReply(messageText);
             if (keywordReply) {
               this.messageQueue.add(async () => { await this.sendKeywordReply(lead, phoneNumber, keywordReply, msg.key); });
-              await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
+              if (!botPaused) await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
               continue;
             }
             // No keyword match: do not send any message (no AI, no acknowledgement)
           }
 
-          await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
+          if (!botPaused) await this.database.addLog('message_received', { phoneNumber, leadId: lead.id }, this.cid);
         }
 
       } catch (error) {
@@ -1139,18 +1135,17 @@ class WhatsAppHandler {
       }
     }
 
-    console.log(`\n📊 Message Processing Summary:`);
-    console.log(`   - Total messages in event: ${m.messages.length}`);
-    console.log(`   - Stored: ${storedCount}`);
-    console.log(`   - Skipped (filters): ${skippedCount}`);
-    console.log(`   - Duplicates: ${duplicateCount}`);
-    
-    if (storedCount > 0) {
-      console.log(`\n✅ Successfully stored ${storedCount} new message(s)`);
-    } else if (duplicateCount > 0) {
-      console.log(`\n⏭️ All messages were duplicates (already processed)`);
-    } else if (skippedCount > 0) {
-      console.log(`\n⏭️ All messages were filtered (status/groups/old)`);
+    if (!botPaused) {
+      console.log(`\n📊 Message Processing Summary:`);
+      console.log(`   - Total messages in event: ${m.messages.length}`);
+      console.log(`   - Stored: ${storedCount}`);
+      console.log(`   - Skipped (filters): ${skippedCount}`);
+      console.log(`   - Duplicates: ${duplicateCount}`);
+      if (storedCount > 0) console.log(`\n✅ Successfully stored ${storedCount} new message(s)`);
+      else if (duplicateCount > 0) console.log(`\n⏭️ All messages were duplicates (already processed)`);
+      else if (skippedCount > 0) console.log(`\n⏭️ All messages were filtered (status/groups/old)`);
+    } else {
+      console.log(`   ⏸️ Bot paused — no message storage or logging until resumed`);
     }
   }
 
@@ -1278,8 +1273,8 @@ class WhatsAppHandler {
     await this.database.incrementReplyCount(lead.id, this.cid);
     const updatedLead = await this.database.getLead(lead.id, this.cid);
     if (this.io) {
-      this.io.emit('new_message', { leadId: lead.id, message: { id: savedMessage.id, lead_id: lead.id, sender: 'shield', content, status: 'replied', timestamp: savedMessage.timestamp }, lead: updatedLead });
-      this.io.emit('leads_changed');
+      this.emit('new_message', { leadId: lead.id, message: { id: savedMessage.id, lead_id: lead.id, sender: 'shield', content, status: 'replied', timestamp: savedMessage.timestamp }, lead: updatedLead });
+      this.emit('leads_changed');
     }
     await this.database.addLog('keyword_reply_sent', { phoneNumber, leadId: lead.id, type: isAudio ? 'audio' : 'text' }, this.cid);
   }
@@ -1419,31 +1414,22 @@ class WhatsAppHandler {
       const savedMessage = await this.database.createMessage(lead.id, 'shield', message, 'replied', timestamp, this.cid);
       await this.database.incrementReplyCount(lead.id, this.cid);
 
-      // Emit WebSocket event for auto-reply
+      // Emit WebSocket event for auto-reply (multi-tenant: this account only)
       const updatedLead = await this.database.getLead(lead.id, this.cid);
-      
-      // ✅ Use io.emit() directly for consistency
-      if (!this.io) {
-        console.error('   ❌ CRITICAL: this.io is null - WebSocket events will NOT reach frontend!');
-        console.error('   ❌ Make sure you called whatsapp.setIO(io) in server.js');
-        console.error('   ⚠️ Auto-reply sent but frontend will not be notified until io is set');
-        return; // Don't emit if io is not set - message is still sent
-      } else {
-        this.io.emit('new_message', {
-          leadId: lead.id,
-          message: {
-            id: savedMessage.id, // Include real database ID
-            lead_id: lead.id,
-            sender: 'shield',
-            content: message,
-            status: 'replied',
-            timestamp: savedMessage.timestamp
-          },
-          lead: updatedLead
-        });
-        this.io.emit('leads_changed');
-        console.log(`   ✅ Auto-reply WebSocket events emitted via io.emit()`);
-      }
+      this.emit('new_message', {
+        leadId: lead.id,
+        message: {
+          id: savedMessage.id,
+          lead_id: lead.id,
+          sender: 'shield',
+          content: message,
+          status: 'replied',
+          timestamp: savedMessage.timestamp
+        },
+        lead: updatedLead
+      });
+      this.emit('leads_changed');
+      console.log(`   ✅ Auto-reply WebSocket events emitted`);
 
       await this.database.addLog('auto_reply_sent', { phoneNumber, leadId: lead.id, jid, replyCount: lead.reply_count + 1 }, this.cid);
     } catch (error) {
@@ -1629,38 +1615,22 @@ Respond naturally and human-like, as if you're having a casual conversation. Be 
       // Always fetch fresh lead after writing so the payload is up to date
       const updatedLead = await this.database.getLead(lead.id, this.cid);
 
-      // ✅ Use io.emit() — broadcasts to ALL connected browser clients.
-      // this.emit() only fires Node EventEmitter listeners internally and never
-      // reaches the browser, which is why the UI wasn't updating.
-      if (!io) {
-        console.warn('   ⚠️ io not passed to sendManualMessage - WebSocket event skipped');
-        console.warn('   ⚠️ Message sent but frontend will not be notified in real-time');
-        // Message is still sent, just no real-time update
-        return { success: true, leadId: lead.id, warning: 'io not provided - no real-time update' };
-      }
-      
-      if (io && savedMessage) {
-        const messagePayload = {
-          id: savedMessage.id, // Use real database ID
-          lead_id: lead.id,
-          sender: 'shield',
-          content: message,
-          status: 'replied',
-          timestamp: savedMessage.timestamp,
-        };
-
-        io.emit('new_message', {
+      // Multi-tenant: emit only to this account's sockets
+      if (savedMessage) {
+        this.emit('new_message', {
           leadId: lead.id,
-          message: messagePayload,
+          message: {
+            id: savedMessage.id,
+            lead_id: lead.id,
+            sender: 'shield',
+            content: message,
+            status: 'replied',
+            timestamp: savedMessage.timestamp,
+          },
           lead: updatedLead,
         });
-
-        io.emit('leads_changed');
-        console.log(`   📡 io.emit('new_message') fired for lead ${lead.id} with message ID ${savedMessage.id}`);
-      } else if (!io) {
-        console.warn('   ⚠️  io not passed to sendManualMessage — WebSocket event skipped');
-      } else if (!savedMessage) {
-        console.warn('   ⚠️  Message not saved (duplicate) — WebSocket event skipped');
+        this.emit('leads_changed');
+        console.log(`   📡 new_message emitted for lead ${lead.id}`);
       }
 
       await this.database.addLog('manual_reply_sent', { phoneNumber: normalizedPhone, leadId: lead.id, jid: jidToUse }, this.cid);

@@ -54,6 +54,8 @@ app.get('/health', (req, res) => {
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Shield Backend listening on ${PORT} (0.0.0.0)`);
   console.log(`✅ Health check available at http://0.0.0.0:${PORT}/health`);
+  const clearOnConnect = process.env.CLEAR_ON_CONNECT;
+  console.log(`📋 CLEAR_ON_CONNECT = ${clearOnConnect === undefined ? '(not set)' : JSON.stringify(clearOnConnect)} — messages ${(clearOnConnect || '').toLowerCase() === 'true' ? 'WILL be cleared on each reconnect/deploy' : 'will be preserved across deploys'}`);
 });
 
 // Build allowed origins once (Express + Socket.IO use the same list)
