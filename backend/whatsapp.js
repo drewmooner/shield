@@ -1176,12 +1176,20 @@ class WhatsAppHandler {
     } catch {
       return null;
     }
-    const normalized = (text || '').trim().toLowerCase();
-    if (!normalized) return null;
-    // Match if the whole keyword appears anywhere in the message (so "pricing" matches "hi, what's your pricing?")
+    const original = (text || '');
+    const normalized = original.toLowerCase();
+    if (!normalized.trim()) return null;
+
+    // Match when the full keyword appears as a whole word/phrase in the message:
+    // - "pricing" matches "what's your pricing today?"
+    // - "free trial" matches "do you offer a free trial for teams?"
+    // but "ric" does NOT match "pricing", and "ok" does NOT match "token".
     const entry = list.find(e => {
       const kw = (e.keyword || '').trim().toLowerCase();
-      return kw && normalized.includes(kw);
+      if (!kw) return false;
+      const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`\\b${escaped}\\b`, 'i');
+      return re.test(original);
     });
     if (!entry) return null;
     const replyType = entry.replyType === 'audio' ? 'audio' : 'text';
