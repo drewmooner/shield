@@ -1178,7 +1178,11 @@ class WhatsAppHandler {
     }
     const normalized = (text || '').trim().toLowerCase();
     if (!normalized) return null;
-    const entry = list.find(e => (e.keyword || '').trim().toLowerCase() === normalized);
+    // Match if the whole keyword appears anywhere in the message (so "pricing" matches "hi, what's your pricing?")
+    const entry = list.find(e => {
+      const kw = (e.keyword || '').trim().toLowerCase();
+      return kw && normalized.includes(kw);
+    });
     if (!entry) return null;
     const replyType = entry.replyType === 'audio' ? 'audio' : 'text';
     return {
@@ -1208,20 +1212,9 @@ class WhatsAppHandler {
 
     const isAudio = reply.replyType === 'audio';
 
-    // 3) Presence indicator before sending:
-    // - text => "typing..."
-    // - audio => "recording audio..." (gray WhatsApp-style)
-    const typingEnabled = (await this.database.getSetting('typing_indicator_enabled', this.cid) || 'true') === 'true';
-    if (typingEnabled && this.sock) {
-      try {
-        await this.sock.sendPresenceUpdate(isAudio ? 'recording' : 'composing', normalizedJid);
-        const previewSec = isAudio
-          ? 2 + Math.random() * 2
-          : Math.min(3, 1 + (reply.message || '').length / 50 * 0.5 + Math.random() * 2);
-        await new Promise(r => setTimeout(r, Math.max(1000, previewSec * 1000)));
-      } catch (_) {}
-    }
-
+    // Resolve audio path (and duration for recording simulation) before presence
+    let audioFullPath = null;
+    let audioDurationSec = null;
     if (isAudio) {
       const relativePath = await this.getAudioPathById(reply.audioId);
       if (!relativePath) {
@@ -1238,9 +1231,9 @@ class WhatsAppHandler {
         return;
       }
       const dataDir = join(__dirname, 'data');
-      const fullPath = join(dataDir, relativePath.replace(/\\/g, '/'));
-      if (!existsSync(fullPath)) {
-        console.error('sendKeywordReply: audio file not found', fullPath);
+      audioFullPath = join(dataDir, relativePath.replace(/\\/g, '/'));
+      if (!existsSync(audioFullPath)) {
+        console.error('sendKeywordReply: audio file not found', audioFullPath);
         if (reply.message && reply.message.trim()) {
           await this.sendMessage(sendJid, reply.message.trim());
           await this.database.addLog('keyword_reply_audio_fallback_text', {
@@ -1253,8 +1246,33 @@ class WhatsAppHandler {
         }
         return;
       }
+      audioDurationSec = await this.getAudioDurationSec(audioFullPath);
+    }
+
+    // 3) Presence indicator: duration scales with content (typing ~chars, recording ~audio length)
+    const typingEnabled = (await this.database.getSetting('typing_indicator_enabled', this.cid) || 'true') === 'true';
+    if (typingEnabled && this.sock) {
       try {
-        await this.sendAudioMessage(sendJid, fullPath);
+        await this.sock.sendPresenceUpdate(isAudio ? 'recording' : 'composing', normalizedJid);
+        let presenceSec;
+        if (isAudio) {
+          const base = audioDurationSec != null && audioDurationSec > 0
+            ? Math.min(30, Math.max(2, audioDurationSec))
+            : 3 + Math.random() * 2;
+          presenceSec = base * (0.85 + Math.random() * 0.3);
+        } else {
+          const len = (reply.message || '').length;
+          const charsPerSec = 28 + Math.random() * 12;
+          const base = 1 + len / charsPerSec + Math.random() * 1.5;
+          presenceSec = Math.max(1, Math.min(18, base)) * (0.9 + Math.random() * 0.2);
+        }
+        await new Promise(r => setTimeout(r, Math.max(1000, Math.round(presenceSec * 1000))));
+      } catch (_) {}
+    }
+
+    if (isAudio) {
+      try {
+        await this.sendAudioMessage(sendJid, audioFullPath);
       } catch (err) {
         console.error('sendKeywordReply: sendAudioMessage failed', err.message);
         throw err;
@@ -1290,6 +1308,40 @@ class WhatsAppHandler {
     }
     const entry = list.find(a => String(a.id) === String(audioId));
     return entry ? entry.path : null;
+  }
+
+  /**
+   * Get audio duration in seconds from file (for human-like "recording" simulation).
+   * Uses ffmpeg -i stderr output; returns null if unavailable.
+   */
+  getAudioDurationSec(fullPath) {
+    return new Promise((resolve) => {
+      if (!fullPath || !existsSync(fullPath)) {
+        resolve(null);
+        return;
+      }
+      try {
+        const ffmpegPath = ffmpegInstaller.path;
+        const proc = spawn(ffmpegPath, ['-i', fullPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        proc.stderr?.on('data', (d) => { stderr += d.toString(); });
+        proc.on('close', () => {
+          const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)[.,](\d+)/);
+          if (match) {
+            const h = parseInt(match[1], 10);
+            const m = parseInt(match[2], 10);
+            const s = parseInt(match[3], 10);
+            const cs = parseInt(match[4].slice(0, 2), 10);
+            resolve(h * 3600 + m * 60 + s + cs / 100);
+          } else {
+            resolve(null);
+          }
+        });
+        proc.on('error', () => resolve(null));
+      } catch (_) {
+        resolve(null);
+      }
+    });
   }
 
   /**
