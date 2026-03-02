@@ -281,6 +281,17 @@ export class PostgresDriver {
     }
   }
 
+  async getAllUserIds() {
+    await this._waitInit();
+    const client = await this.pool.connect();
+    try {
+      const r = await client.query('SELECT id FROM users');
+      return r.rows.map(row => row.id);
+    } finally {
+      client.release();
+    }
+  }
+
   _waitInit() {
     return this.initPromise;
   }

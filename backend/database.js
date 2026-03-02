@@ -76,6 +76,13 @@ class Database {
     return null;
   }
 
+  /** List all user IDs (for warming up per-user WhatsApp handlers). */
+  async getAllUserIds() {
+    if (this.driver?.getAllUserIds) return this.driver.getAllUserIds();
+    // LowDB / single-tenant fallback
+    return ['default'];
+  }
+
   async init() {
     await this.db.read();
     

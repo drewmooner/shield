@@ -437,6 +437,29 @@ io.on('connection', (socket) => {
   });
 });
 
+// Warm up WhatsApp handlers for existing users on startup so bots keep running after deploys
+(async () => {
+  try {
+    const userIds = await db.getAllUserIds();
+    if (!userIds || userIds.length === 0) {
+      console.log('👥 No users found for WhatsApp warm-up');
+      return;
+    }
+    console.log(`👥 Warming up WhatsApp handlers for ${userIds.length} user(s)...`);
+    for (const uid of userIds) {
+      try {
+        const { whatsapp } = getOrCreateHandler(uid);
+        console.log(`   ✅ WhatsApp handler initialized for user ${uid}`);
+      } catch (err) {
+        console.error(`   ⚠️ Failed to initialize WhatsApp handler for user ${uid}:`, err.message);
+      }
+    }
+    console.log('✅ WhatsApp warm-up complete');
+  } catch (err) {
+    console.error('⚠️ WhatsApp warm-up failed:', err.message);
+  }
+})();
+
 // API Routes
 // Auth: skip for health and auth routes; otherwise require JWT when JWT_SECRET set
 app.use((req, res, next) => {
