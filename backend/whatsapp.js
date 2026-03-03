@@ -1035,8 +1035,8 @@ class WhatsAppHandler {
           }
         }
 
-        // When paused: don't store messages, don't log to bot_logs, don't emit — saves DB and credits. Resumes when bot is resumed.
-        if (botPaused) continue;
+        // When paused: still store messages and emit to UI (so backlog/resume can work),
+        // but skip auto-replies and message_received logs (handled later via botPaused flag).
 
         // Check if message already exists (prevent duplicates)
         const existingMessages = await this.database.getMessagesByLead(lead.id, this.cid);
