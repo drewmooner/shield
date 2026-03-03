@@ -618,6 +618,14 @@ class WhatsAppHandler {
       this.isConnected = true;
       this.isConnecting = false;
       
+      // After reconnect, scan for recent (<=24h) last-user messages that contain a keyword
+      // but never received a Shield reply (backfill missed auto-replies).
+      setImmediate(() => {
+        this.processOfflineKeywordBacklog().catch(err => {
+          console.error('⚠️ Error in processOfflineKeywordBacklog:', err.message);
+        });
+      });
+      
       // ✅ DEBUG: Verify socket is ready and listeners are active
       console.log('\n🔍 DEBUG: Verifying socket after connection...');
       console.log(`   Socket exists: ${!!this.sock}`);
@@ -1495,6 +1503,95 @@ class WhatsAppHandler {
     } catch (error) {
       console.error('Error sending auto-reply:', error);
       await this.database.addLog('error', { error: error.message, context: 'sendAutoReply' }, this.cid);
+    }
+  }
+
+  /**
+   * After reconnect, backfill missed keyword replies:
+   * - Look at recent user messages (within last 24 hours)
+   * - Find the latest user message per lead that contains a keyword
+   * - Only if there is NO Shield reply after that message
+   * Then queue a keyword reply for that message.
+   * This avoids responding to very old messages and avoids double replies,
+   * while still catching keywords that weren't the very last message.
+   */
+  async processOfflineKeywordBacklog() {
+    try {
+      const autoReplyEnabled = (await this.database.getSetting('auto_reply_enabled', this.cid)) === 'true';
+      const botPaused = (await this.database.getSetting('bot_paused', this.cid)) === 'true';
+      if (!autoReplyEnabled || botPaused) {
+        console.log('   ⏭️ Skipping offline keyword backlog (auto-reply disabled or bot paused)');
+        return;
+      }
+
+      const leads = await this.database.getAllLeads(null, this.cid);
+      if (!Array.isArray(leads) || leads.length === 0) return;
+
+      const now = Date.now();
+      const cutoff = now - 24 * 60 * 60 * 1000; // 24 hours
+
+      console.log(`\n🔍 Processing offline keyword backlog for ${leads.length} lead(s) (last 24h)...`);
+
+      for (const lead of leads) {
+        try {
+          const messages = await this.database.getMessagesByLead(lead.id, this.cid);
+          if (!Array.isArray(messages) || messages.length === 0) continue;
+
+          // Find the latest user message within 24h that contains a keyword
+          const userMessages = messages.filter(m => m && m.sender === 'user' && m.timestamp);
+          if (userMessages.length === 0) continue;
+
+          let targetMessage = null;
+          let reply = null;
+
+          for (let i = userMessages.length - 1; i >= 0; i--) {
+            const m = userMessages[i];
+            const ts = new Date(m.timestamp).getTime();
+            if (!Number.isFinite(ts) || ts < cutoff) continue;
+
+            const r = await this.getKeywordReply(m.content || '');
+            if (!r) continue;
+
+            // Check if there is any Shield reply AFTER this message
+            const hasShieldAfter = messages.some(
+              msg =>
+                msg &&
+                msg.sender === 'shield' &&
+                msg.timestamp &&
+                new Date(msg.timestamp).getTime() > ts
+            );
+            if (hasShieldAfter) {
+              // Owner or Shield already replied after this keyword; skip it
+              continue;
+            }
+
+            targetMessage = m;
+            reply = r;
+            break;
+          }
+
+          if (!targetMessage || !reply) continue;
+
+          console.log(`   📌 Queuing offline keyword reply for lead ${lead.id} (message within 24h)`);
+          if (!this.messageQueue) {
+            console.warn('   ⚠️ messageQueue not initialized; skipping offline reply');
+            continue;
+          }
+
+          this.messageQueue.add(async () => {
+            try {
+              await this.sendKeywordReply(lead, lead.phone_number, reply, null);
+              console.log(`   ✅ Offline keyword reply sent for lead ${lead.id}`);
+            } catch (err) {
+              console.error(`   ❌ Failed to send offline keyword reply for lead ${lead.id}:`, err.message);
+            }
+          });
+        } catch (leadError) {
+          console.error(`   ⚠️ Error while processing offline backlog for lead ${lead?.id}:`, leadError.message);
+        }
+      }
+    } catch (error) {
+      console.error('❌ processOfflineKeywordBacklog error:', error);
     }
   }
 
