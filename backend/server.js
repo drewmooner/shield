@@ -684,6 +684,17 @@ app.post('/api/bot/resume', async (req, res) => {
   await db.setSetting('bot_paused', 'false', req.userId);
   await db.addLog('bot_resumed', { timestamp: new Date().toISOString() }, req.userId);
   emitToUser(req.userId, 'bot_status_changed', { bot_paused: 'false' });
+  // After resuming, backfill any missed keyword messages (last 24h, unanswered)
+  try {
+    const { whatsapp } = getOrCreateHandler(req.userId);
+    setImmediate(() => {
+      whatsapp.processOfflineKeywordBacklog().catch((err) => {
+        console.error('⚠️ Error running offline keyword backlog on resume:', err.message);
+      });
+    });
+  } catch (err) {
+    console.error('⚠️ Could not schedule offline keyword backlog on resume:', err.message);
+  }
   res.json({ success: true, paused: false });
 });
 
