@@ -8,6 +8,61 @@ import { initAuthCreds, BufferJSON, proto } from '@whiskeysockets/baileys';
 const SESSION_NAME = 'shield-session';
 
 export async function usePostgresAuthState(pool, sessionName = SESSION_NAME) {
+  const LEGACY_SESSION_NAME = SESSION_NAME;
+
+  async function copyLegacySessionIfNeeded() {
+    if (!sessionName || sessionName === LEGACY_SESSION_NAME) return;
+    const client = await pool.connect();
+    try {
+      const currentCreds = await client.query(
+        'SELECT 1 FROM auth_creds WHERE session_name = $1 LIMIT 1',
+        [sessionName]
+      );
+      const currentKeys = await client.query(
+        'SELECT 1 FROM auth_keys WHERE session_name = $1 LIMIT 1',
+        [sessionName]
+      );
+      if (currentCreds.rows.length > 0 || currentKeys.rows.length > 0) return;
+
+      const legacyCreds = await client.query(
+        'SELECT data FROM auth_creds WHERE session_name = $1 LIMIT 1',
+        [LEGACY_SESSION_NAME]
+      );
+      const legacyKeys = await client.query(
+        'SELECT key_name, data FROM auth_keys WHERE session_name = $1',
+        [LEGACY_SESSION_NAME]
+      );
+      if (legacyCreds.rows.length === 0 && legacyKeys.rows.length === 0) return;
+
+      await client.query('BEGIN');
+      if (legacyCreds.rows.length > 0) {
+        await client.query(
+          `INSERT INTO auth_creds (session_name, data) VALUES ($1, $2::jsonb)
+           ON CONFLICT (session_name) DO UPDATE SET data = $2::jsonb`,
+          [sessionName, JSON.stringify(legacyCreds.rows[0].data)]
+        );
+      }
+      for (const row of legacyKeys.rows) {
+        await client.query(
+          `INSERT INTO auth_keys (session_name, key_name, data) VALUES ($1, $2, $3::jsonb)
+           ON CONFLICT (session_name, key_name) DO UPDATE SET data = $3::jsonb`,
+          [sessionName, row.key_name, JSON.stringify(row.data)]
+        );
+      }
+      await client.query('COMMIT');
+      console.log(`🔁 Migrated legacy WhatsApp auth session "${LEGACY_SESSION_NAME}" -> "${sessionName}"`);
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // no-op
+      }
+      console.error('⚠️ Failed to migrate legacy auth session:', error.message);
+    } finally {
+      client.release();
+    }
+  }
+
   const readData = async (key) => {
     if (key === 'creds.json') {
       const client = await pool.connect();
@@ -88,6 +143,7 @@ export async function usePostgresAuthState(pool, sessionName = SESSION_NAME) {
     }
   };
 
+  await copyLegacySessionIfNeeded();
   const creds = (await readData('creds.json')) || initAuthCreds();
 
   return {

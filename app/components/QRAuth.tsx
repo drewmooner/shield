@@ -44,7 +44,22 @@ export default function QRAuth({ onConnected }: { onConnected: () => void }) {
       } catch (err: unknown) {
         if (cancelled.current) return false;
         const msg = (err instanceof Error ? err.message : String(err)) || '';
+        const isAuthError =
+          msg.includes(' 401 ') ||
+          msg.toLowerCase().includes('unauthorized') ||
+          msg.includes('INVALID_TOKEN') ||
+          msg.includes('NO_TOKEN');
+        const isAuthConfigError =
+          msg.includes(' 503 ') && msg.toLowerCase().includes('auth not configured');
         const isRetryable = msg.includes('503') || msg.includes('502');
+        if (isAuthError) {
+          setError('Your session expired or is invalid. Please sign in again.');
+          return false;
+        }
+        if (isAuthConfigError) {
+          setError('Backend auth is not configured. Set JWT_SECRET on the backend and redeploy.');
+          return false;
+        }
         if (isRetryable && attempt < retries) {
           await new Promise((r) => setTimeout(r, retryDelayMs(attempt)));
           continue;
