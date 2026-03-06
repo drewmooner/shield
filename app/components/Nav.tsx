@@ -2,17 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useAuth } from '../providers/AuthProvider';
 
 export default function Nav() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const { user, isAuthenticated, logout } = useAuth();
-
-  useEffect(() => {
-    setIsOpen(false);
-  }, [pathname]);
 
   const links = [
     { href: '/', label: 'Dashboard' },
@@ -66,6 +62,7 @@ export default function Nav() {
               <li key={link.href}>
                 <Link
                   href={link.href}
+                  onClick={() => setIsOpen(false)}
                   className={`block px-4 py-2 rounded-lg transition-colors ${
                     pathname === link.href
                       ? 'bg-zinc-900 dark:bg-zinc-50 text-white dark:text-black'

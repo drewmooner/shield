@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { getToken, setToken, removeToken, getStoredUser, setStoredUser } from '../lib/auth';
 import { login as apiLogin, register as apiRegister } from '../lib/api';
@@ -23,18 +23,14 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setTokenState] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [token, setTokenState] = useState<string | null>(() => (
+    typeof window === 'undefined' ? null : getToken()
+  ));
+  const [user, setUser] = useState<User | null>(() => (
+    typeof window === 'undefined' ? null : getStoredUser()
+  ));
+  const [loading] = useState(false);
   const router = useRouter();
-
-  useEffect(() => {
-    const t = getToken();
-    const u = getStoredUser();
-    setTokenState(t);
-    setUser(u);
-    setLoading(false);
-  }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const data = await apiLogin(email, password);
