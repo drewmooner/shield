@@ -224,15 +224,20 @@ class WhatsAppHandler {
       // Update status to connecting
       await this.updateStatus('connecting');
 
-      // Create socket with explicit latest WA Web version (reduces 405 handshake failures)
+      // Create socket with explicit WA Web version only when confirmed current.
+      // If fetchLatestBaileysVersion reports stale metadata, let Baileys use its own default
+      // because forcing a stale version can cause "can't link device" after QR scan.
       let latestVersion = null;
       let latestInfo = null;
       try {
         console.log('🌐 Fetching latest WhatsApp Web version...');
         latestInfo = await fetchLatestBaileysVersion();
-        latestVersion = latestInfo?.version || null;
-        if (latestVersion) {
-          console.log(`✅ Using WA Web version: ${latestVersion.join('.')} (isLatest: ${latestInfo?.isLatest ? 'yes' : 'no'})`);
+        const fetchedVersion = latestInfo?.version || null;
+        if (fetchedVersion && latestInfo?.isLatest) {
+          latestVersion = fetchedVersion;
+          console.log(`✅ Using WA Web version: ${latestVersion.join('.')} (isLatest: yes)`);
+        } else if (fetchedVersion) {
+          console.log(`⚠️ WA Web version metadata is stale (${fetchedVersion.join('.')} isLatest: no) - using Baileys default version`);
         } else {
           console.log('⚠️ Could not resolve WA version from Baileys, falling back to default');
         }
