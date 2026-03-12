@@ -405,10 +405,20 @@ function emitToUser(userId, eventName, data) {
   else io.emit(eventName, data);
 }
 
-// Prune old messages from PostgreSQL on startup (all tenants; logs deleted row count)
-const pruneDays = parseInt(process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS || '5', 10);
+// Prune old messages on startup (PostgreSQL globally; JSON via single-tenant fallback)
+// Default retention:
+// - Postgres (db.driver truthy): 1 day (keep last 24h of messages)
+// - JSON (no driver): 5 days (more forgiving for local/dev)
+const rawPruneDays = process.env.PRUNE_MESSAGES_OLDER_THAN_DAYS;
+const defaultPruneDays = db.driver ? 1 : 5;
+const pruneDays = parseInt(rawPruneDays || String(defaultPruneDays), 10);
 if (Number.isFinite(pruneDays) && pruneDays > 0) {
-  db.pruneOldMessagesGlobally(pruneDays).catch((err) => console.warn('Prune on startup:', err.message));
+  console.log(`🧹 Startup prune: deleting messages older than ${pruneDays} day(s)...`);
+  db.pruneOldMessagesGlobally(pruneDays)
+    .then((deleted) => {
+      console.log(`🧹 Startup prune complete: deleted ${deleted} old message(s).`);
+    })
+    .catch((err) => console.warn('🧹 Prune on startup failed:', err.message));
 }
 
 // Socket.IO: auth by token when JWT_SECRET set; send that user's status

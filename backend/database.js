@@ -620,8 +620,11 @@ class Database {
 
   /** Prune messages older than N days for all tenants (Postgres only). Always logs deleted count. */
   async pruneOldMessagesGlobally(olderThanDays = 5) {
-    if (this.driver?.pruneOldMessagesGlobally) return this.driver.pruneOldMessagesGlobally(olderThanDays);
-    return 0;
+    if (this.driver?.pruneOldMessagesGlobally) {
+      return this.driver.pruneOldMessagesGlobally(olderThanDays);
+    }
+    // JSON fallback: reuse single-tenant prune so local/dev environments also prune old messages
+    return this.pruneOldMessages(olderThanDays);
   }
 
   /** Prune messages older than N days to save space. No-op for JSON DB if days not set; use for Postgres. */

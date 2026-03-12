@@ -105,6 +105,35 @@ export default function Home() {
     };
   }, [authLoading, isAuthenticated, socket, socketConnected]);
 
+  // Fallback: periodically re-check bot status when we're on the QR/reconnect screen.
+  // This handles cases where the WebSocket update is missed or arrives before this tab is ready.
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    // Only poll when not showing the dashboard (i.e. QR/reconnect UI visible)
+    const show = isConnected || (isReconnecting && hasBeenConnected);
+    if (show) return;
+
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const status = await getBotStatus();
+        const connected = status.status === 'connected' && Boolean(status.isConnected);
+        const reconnecting = status.status === 'reconnecting' || status.status === 'connecting';
+        setIsConnected(connected);
+        setIsReconnecting(reconnecting);
+        if (connected) setHasBeenConnected(true);
+      } catch {
+        // network errors are fine here; QRAuth already handles user-facing messaging
+      }
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [authLoading, isAuthenticated, isConnected, isReconnecting, hasBeenConnected]);
+
   // Show dashboard if connected OR reconnecting (after we've been connected once) – keeps Shield UI visible during flapping
   const showDashboard = isConnected || (isReconnecting && hasBeenConnected);
 
