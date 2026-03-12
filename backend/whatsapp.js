@@ -26,7 +26,9 @@ class WhatsAppHandler {
     this.isConnecting = false;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
+    // Base reconnect delay (ms). Actual delay uses exponential backoff per attempt.
     this.reconnectDelay = 5000;
+    this.maxReconnectDelay = 10 * 60 * 1000; // Cap backoff at 10 minutes
     this.messageQueue = null;
     this.onStatusChange = null;
     this.eventEmitter = null;
@@ -59,6 +61,13 @@ class WhatsAppHandler {
     if (this.io?.sockets) {
       console.log(`   Connected frontend clients: ${this.io.sockets.sockets?.size || 0}`);
     }
+  }
+
+  getNextReconnectDelay() {
+    const base = this.reconnectDelay || 5000;
+    const attempt = Math.max(1, this.reconnectAttempts + 1);
+    const delay = Math.min(base * Math.pow(2, attempt - 1), this.maxReconnectDelay || (10 * 60 * 1000));
+    return delay;
   }
 
   emit(eventName, data) {
@@ -569,17 +578,19 @@ class WhatsAppHandler {
         }
         
         // Normal timeout (not QR-related, not network error)
-        console.log('   ⏱️ Connection timed out - reconnecting...');
+        console.log('   ⏱️ Connection timed out - reconnecting with backoff...');
         this.isConnecting = false;
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
           this.reconnectAttempts++;
+          const delay = this.getNextReconnectDelay();
           await this.updateStatus('reconnecting', { 
             attempt: this.reconnectAttempts,
-            reason: 'timed_out'
+            reason: 'timed_out',
+            delayMs: delay
           });
           setTimeout(async () => {
             await this.initialize();
-          }, this.reconnectDelay);
+          }, delay);
         } else {
           await this.updateStatus('disconnected', { 
             reason: 'max_attempts',
@@ -591,17 +602,19 @@ class WhatsAppHandler {
 
       // Generic close handling
       if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-        console.log(`   🔄 Reconnecting (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})...`);
         this.isConnecting = false;
         this.reconnectAttempts++;
+        const delay = this.getNextReconnectDelay();
+        console.log(`   🔄 Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${Math.round(delay / 1000)}s...`);
         await this.updateStatus('reconnecting', { 
           attempt: this.reconnectAttempts,
-          reason: DisconnectReason[statusCode] || 'unknown'
+          reason: DisconnectReason[statusCode] || 'unknown',
+          delayMs: delay
         });
         
         setTimeout(async () => {
           await this.initialize();
-        }, this.reconnectDelay);
+        }, delay);
       } else {
         console.log('   ❌ Max reconnect attempts reached or should not reconnect');
         this.isConnecting = false;
