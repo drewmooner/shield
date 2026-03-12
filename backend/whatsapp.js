@@ -623,6 +623,37 @@ class WhatsAppHandler {
       this.isConnected = true;
       this.isConnecting = false;
       
+      // If this Shield account connects with a different WhatsApp number than before,
+      // start with a fresh inbox by clearing its leads/messages once for the new number.
+      setImmediate(async () => {
+        try {
+          const jid = this.sock?.user?.id || null;
+          if (!jid) return;
+          // Extract bare phone digits from JID like "23490...:15@s.whatsapp.net"
+          let phone = jid.split('@')[0];
+          if (phone.includes(':')) phone = phone.split(':')[0];
+          phone = phone.replace(/\D/g, '');
+          if (!phone) return;
+
+          const settingKey = 'last_phone_number';
+          const lastPhone = await this.database.getSetting(settingKey, this.cid);
+          if (lastPhone && lastPhone !== phone) {
+            console.log(`\n🧹 Detected WhatsApp number change for client "${this.cid}": ${lastPhone} -> ${phone}`);
+            console.log('   Clearing leads and messages so this number starts with a fresh inbox.');
+            const result = await this.database.clearAll(this.cid);
+            await this.database.addLog('phone_number_changed_cleared_data', {
+              from: lastPhone,
+              to: phone,
+              leadCount: result?.leadCount ?? null,
+              messageCount: result?.messageCount ?? null
+            }, this.cid);
+          }
+          await this.database.setSetting(settingKey, phone, this.cid);
+        } catch (err) {
+          console.error('⚠️ Failed to handle phone number change on connect:', err.message);
+        }
+      });
+      
       // After reconnect, scan for recent (<=24h) last-user messages that contain a keyword
       // but never received a Shield reply (backfill missed auto-replies).
       setImmediate(() => {
